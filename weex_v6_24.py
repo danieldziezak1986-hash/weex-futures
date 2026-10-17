@@ -3995,7 +3995,7 @@ def v624_capture(live,oi_audit,now_ms,drive_ok):
         path.parent.mkdir(parents=True,exist_ok=True)
         with path.open('a',encoding='utf-8') as f:
             for row in rows:
-                f.write(json.dumps(row,ensure_ascii=False,default=json_default)+'\\n')
+                f.write(json.dumps(row,ensure_ascii=False,default=json_default)+'\n')
         persistence='DRIVE' if drive_ok else 'TYLKO_BIEZACY_ZIP'
         saved=len(rows)
     except Exception as exc:
