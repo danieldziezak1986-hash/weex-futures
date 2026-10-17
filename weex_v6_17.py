@@ -897,7 +897,8 @@ def structure(h, l, c, k=3):
     ih = il = 0
     for i in range(len(c)):
         while ih < len(ph) and ph[ih] + k <= i:
-            last_sh, sh_live = ph[ih], True            ih += 1
+            last_sh, sh_live = ph[ih], True
+            ih += 1
         while il < len(pl) and pl[il] + k <= i:
             last_sl, sl_live = pl[il], True
             il += 1
@@ -1796,7 +1797,8 @@ def weex_private(path, params=None, offset_ms=0):
         raise PermissionError('sekrety Colab: ' + ', '.join(f"{n} - {_secret_err.get(n, 'pusty')}" for n in miss))
     query = '&'.join(f'{k}={v}' for k, v in (params or {}).items())
     ts = str(int(time.time() * 1000) + offset_ms)
-    msg = ts + 'GET' + path + (('?' + query) if query else '')    sign = base64.b64encode(hmac.new(secret.encode(), msg.encode(), hashlib.sha256).digest()).decode()
+    msg = ts + 'GET' + path + (('?' + query) if query else '')
+    sign = base64.b64encode(hmac.new(secret.encode(), msg.encode(), hashlib.sha256).digest()).decode()
     headers = {'ACCESS-KEY': key, 'ACCESS-SIGN': sign, 'ACCESS-PASSPHRASE': phrase, 'ACCESS-TIMESTAMP': ts,
                'Content-Type': 'application/json', 'locale': 'en-US'}
     limiter.wait()
@@ -2695,7 +2697,8 @@ def hist_fetch_all(PP, now_ms):
     syms = [s for s, P in sorted(PP.items(), key=lambda kv: -number((kv[1]['raw'].get('ticker') or {}).get('quoteVolume')))
             if P['asset_type'] == 'COIN'][:HIST_COINS]
     if 'BTCUSDT' in PP and 'BTCUSDT' not in syms:
-        syms.append('BTCUSDT')    print(f'Test historyczny: {src}, {len(syms)} kontraktow, {HIST_DAYS} dni ...')
+        syms.append('BTCUSDT')
+    print(f'Test historyczny: {src}, {len(syms)} kontraktow, {HIST_DAYS} dni ...')
     PPh = {}
     if src == 'weex_archive':
         PPh = {s: {**PP[s], 'forming': {}} for s in syms if s in PP}
@@ -3594,7 +3597,8 @@ def main():
         r['rank_24h'] = ranks.get(r['symbol'])
         r['vol_rank'] = vrank.get(r['symbol'])
     for r in live:
-        r['rank_24h'] = ranks.get(r['symbol'])        cechy_ruchu(r)
+        r['rank_24h'] = ranks.get(r['symbol'])
+        cechy_ruchu(r)
         r['vol_rank'] = vrank.get(r['symbol'])
     if not replay:
         save_oi_history(oi_hist, drive_ok, now_ms)
@@ -4493,7 +4497,8 @@ def apply_tradfi(live, tf_tab):
             r['filtr'] = ';'.join(f_ for f_ in (r.get('filtr') or '').split(';') if f_ and f_ != 'tradfi_bez_testu')
             r['status_bramki'] = 'DO GRY'
         else:
-            r['status_bramki'] = 'OBSERWACJA'        r['tradfi_test_n'] = n
+            r['status_bramki'] = 'OBSERWACJA'
+        r['tradfi_test_n'] = n
 
 
 def squeeze_watch(PP, summary, now_ms, drive_ok):
