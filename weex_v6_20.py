@@ -448,6 +448,7 @@ try:
     IN_COLAB = True
 except ImportError:
     IN_COLAB = False
+
 VERSION = 'V6.20'
 WEEX = 'https://api-contract.weex.com'
 INTERVALS = {'5m': HISTORY_5M_BARS, '15m': 1000, '1h': 1000, '4h': 500}
@@ -896,7 +897,8 @@ def structure(h, l, c, k=3):
     ih = il = 0
     for i in range(len(c)):
         while ih < len(ph) and ph[ih] + k <= i:
-            last_sh, sh_live = ph[ih], True            ih += 1
+            last_sh, sh_live = ph[ih], True
+            ih += 1
         while il < len(pl) and pl[il] + k <= i:
             last_sl, sl_live = pl[il], True
             il += 1
@@ -1345,7 +1347,8 @@ def market_features(A, price, now_ms, btc_A=None, light=False):
     f['struct_1h_bias'], f['struct_1h'] = st1['bias'], st1['label']
     if st1['events']:
         e = st1['events'][-1]
-        f['last_event_1h'] = f"{e[2]}{'+' if e[1] > 0 else '-'} {min(len(a1), 300) - 1 - e[0]}"    if not light:
+        f['last_event_1h'] = f"{e[2]}{'+' if e[1] > 0 else '-'} {min(len(a1), 300) - 1 - e[0]}"
+    if not light:
         st15 = structure(a15[:, H], a15[:, L], a15[:, C], 3)
         f['struct_15m_bias'], f['struct_15m'] = st15['bias'], st15['label']
         if st15['events']:
@@ -1794,7 +1797,8 @@ def weex_private(path, params=None, offset_ms=0):
         raise PermissionError('sekrety Colab: ' + ', '.join(f"{n} - {_secret_err.get(n, 'pusty')}" for n in miss))
     query = '&'.join(f'{k}={v}' for k, v in (params or {}).items())
     ts = str(int(time.time() * 1000) + offset_ms)
-    msg = ts + 'GET' + path + (('?' + query) if query else '')    sign = base64.b64encode(hmac.new(secret.encode(), msg.encode(), hashlib.sha256).digest()).decode()
+    msg = ts + 'GET' + path + (('?' + query) if query else '')
+    sign = base64.b64encode(hmac.new(secret.encode(), msg.encode(), hashlib.sha256).digest()).decode()
     headers = {'ACCESS-KEY': key, 'ACCESS-SIGN': sign, 'ACCESS-PASSPHRASE': phrase, 'ACCESS-TIMESTAMP': ts,
                'Content-Type': 'application/json', 'locale': 'en-US'}
     limiter.wait()
@@ -2243,7 +2247,8 @@ def funding_points(raw):
     pts = []
     for x in raw.get('funding_history') or []:
         if isinstance(x, dict):
-            t, v = number(x.get('fundingTime')), number(x.get('fundingRate'))            if t and v is not None:
+            t, v = number(x.get('fundingTime')), number(x.get('fundingRate'))
+            if t and v is not None:
                 pts.append((int(t), float(v)))
     out = None
     if pts:
@@ -2692,7 +2697,8 @@ def hist_fetch_all(PP, now_ms):
     syms = [s for s, P in sorted(PP.items(), key=lambda kv: -number((kv[1]['raw'].get('ticker') or {}).get('quoteVolume')))
             if P['asset_type'] == 'COIN'][:HIST_COINS]
     if 'BTCUSDT' in PP and 'BTCUSDT' not in syms:
-        syms.append('BTCUSDT')    print(f'Test historyczny: {src}, {len(syms)} kontraktow, {HIST_DAYS} dni ...')
+        syms.append('BTCUSDT')
+    print(f'Test historyczny: {src}, {len(syms)} kontraktow, {HIST_DAYS} dni ...')
     PPh = {}
     if src == 'weex_archive':
         PPh = {s: {**PP[s], 'forming': {}} for s in syms if s in PP}
@@ -3143,6 +3149,7 @@ def save_oi_history(hist, drive_ok, now_ms):
     hist = {k: [x for x in v if x[0] >= cutoff] for k, v in hist.items()}
     (Path(DRIVE_DIR) / OI_HISTORY_NAME).write_text(json.dumps(hist))
 
+
 # ============================== GLOWNA ==============================
 def write_csv(name, rows, first=()):
     df = pd.DataFrame(rows)
@@ -3590,7 +3597,8 @@ def v619_watchlist(live, limit_per_side=12):
     return out
 
 
-def v619_save_drive_diagnostics(drive_ok, now_ms, rows):    # Przy kazdym uruchomieniu zostaje w Drive ostatnia diagnostyka i historia dat.
+def v619_save_drive_diagnostics(drive_ok, now_ms, rows):
+    # Przy kazdym uruchomieniu zostaje w Drive ostatnia diagnostyka i historia dat.
     if not drive_ok: return 'BRAK_DYSKU'
     try:
         root=Path(DRIVE_DIR) / 'v619_diagnostics'
@@ -4039,7 +4047,8 @@ def main():
         for r in live])
     write_csv('ranking.csv', rank_rows, RANK_FIRST)
     write_csv('ranking_market.csv', [r for r in rank_rows if r['entry_type'] == 'MARKET'], RANK_FIRST)
-    write_csv('ranking_limit.csv', [r for r in rank_rows if r['entry_type'] == 'LIMIT'], RANK_FIRST)    live.sort(key=lambda r: (order.get(r['status_bramki'], 2), r['filtr'] != '', not r['tradable'], -r['score_R'],
+    write_csv('ranking_limit.csv', [r for r in rank_rows if r['entry_type'] == 'LIMIT'], RANK_FIRST)
+    live.sort(key=lambda r: (order.get(r['status_bramki'], 2), r['filtr'] != '', not r['tradable'], -r['score_R'],
                              r['dist_entry_atr']))
     for pos in positions:
         if not any(r['symbol'] == pos['symbol'] and r['side'] == pos['side'] for r in pos_rows):
@@ -4488,7 +4497,8 @@ def wybor_ryzyka(rank_rows, side, ryz, n_poz):
                              r['entry_type'] != 'LIMIT', -(r['rr_tp1_net'] or 0)))
     wyb, out = set(), []
     for r in rank_rows:
-        if r['side'] == side:            r['w_limicie_ryzyka'] = False
+        if r['side'] == side:
+            r['w_limicie_ryzyka'] = False
     for r in cand:
         if r['symbol'] in wyb:
             continue
@@ -4937,7 +4947,8 @@ def apply_conditions(rows, shock, ochrona, dzien=None):
     if shock and shock.get('alarm'):
         glob.append('alarm BTC')
     if ochrona and ochrona.get('aktywny'):
-        glob.append('tryb ochronny')    for r in rows:
+        glob.append('tryb ochronny')
+    for r in rows:
         why = list(glob)
         s = 1 if r['side'] == 'LONG' else -1
         st = (ochrona or {}).get('strony', {}).get(r['side'], {})
