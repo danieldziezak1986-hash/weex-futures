@@ -4648,7 +4648,9 @@ def v632_funding_and_flags(live, PP, now_ms):
              'funding_wiek_min':age,
              'funding_next_ms':next_t or None,
              'funding_status_danych':('BRAK_DANYCH' if rate is None else
-                'STARE_DANE' if age is not None and age>30 else 'DOSTEPNE'),
+                'ZNACZNIK_PO_CZASIE_SNAPSHOTU' if age is not None and age < -0.5 else
+                'STARE_DANE' if age is not None and age>30 else
+                'BRAK_CZASU_ZRODLA' if age is None else 'DOSTEPNE'),
              'potwierdzone_filtry':good,'brak_danych_filtrow':missing,
              'brakujace_filtry':no,
              'uwaga':'Funding ostatni/prognoza nie gwarantuja przyszlej oplaty; Z-score nie jest procentem'}
@@ -4660,6 +4662,7 @@ def v632_funding_and_flags(live, PP, now_ms):
         'z_rzeczywista_stawka_funding':sum(r['funding_ostatni_decimal'] is not None for r in rows),
         'z_czasem_kolejnego_fundingu':sum(r['funding_next_ms'] is not None for r in rows),
         'z_brakami_flag':sum(r['brak_danych_filtrow']>0 for r in rows),
+        'funding_po_snapshotie':sum(r['funding_status_danych']=='ZNACZNIK_PO_CZASIE_SNAPSHOTU' for r in rows),
         'bramka_zmieniona':False
     },pretty=True)
     print('V6.32 funding:',len(rows),'setupow; stawki dostepne:',
@@ -5677,6 +5680,7 @@ def main():
     v630_complete_cohorts(PP,now_ms,drive_ok)
     v631_setup_readiness(live,now_ms)
     v632_funding_and_flags(live,PP,now_ms)
+    shutil.copyfile(OUT/'v632_funding_i_filtry.csv',OUT/'v633_funding_i_filtry.csv')
     v619_drive = v619_drive_status(drive_ok, arch, oi_hist, now_ms)
     v619_oi = v619_oi_quality(v618_oi)
     v619_reasons = v619_rejection_summary(v618_reject)
