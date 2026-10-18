@@ -4926,6 +4926,8 @@ def v630_complete_cohorts(PP, now_ms, drive_ok):
         tp = number(x['tp1'])
         first, end = v630_bounds(t, step)
         row = {'symbol':sym,'side':side,'entry_type':mode,
+               'event_id':x.get('_v632_event_id'),
+               'snapshoty_w_zdarzeniu':x.get('_v632_snapshots',1),
                'setup_type':str(x.get('setup_type') or ''),
                'dzien_utc':str(x.get('snapshot_utc') or '')[:10],
                'snapshot_ms':t,'first_candle_ms':first,'horizon_end_ms':end,
@@ -4933,6 +4935,7 @@ def v630_complete_cohorts(PP, now_ms, drive_ok):
                'status':'','wymagane_swiece':expected_count,
                'dostepne_swiece':0,'brakujace_swiece':expected_count,
                'filled':False,'R_net_szacunek':None,
+               'rozwiazanie_1m':'NIE_DOTYCZY',
                'trend_1h':x.get('v622_trend_1h_ok'),
                'struktura_15m':x.get('v622_struktura_15m_ok'),
                'wybicie_5m':x.get('v622_wybicie_5m_ok'),
@@ -4963,9 +4966,26 @@ def v630_complete_cohorts(PP, now_ms, drive_ok):
                             filled = True
                             fill_ms = ts
                             if v631_limit_ambiguous_on_fill(side, hi, lo, sl, tp):
-                                ambiguous_limit = True
-                                finish = 'LIMIT_FILL_5M_NIEJEDNOZNACZNY'
-                                break
+                                minute_result=v632_resolve_limit_1m(
+                                    side,e,sl,tp,ts,v632_get_minutes(sym,ts))
+                                minute_status=minute_result['status']
+                                row['rozwiazanie_1m']=minute_status
+                                if minute_status in ('SL','TP1'):
+                                    outcome=minute_result['outcome']
+                                    finish=minute_status
+                                    fill_ms=minute_result['fill_ms']
+                                    row['exit_ms']=minute_result['exit_ms']
+                                    minute_resolved+=1
+                                    break
+                                elif minute_status=='LIMIT_1M_PO_WEJSCIU_BEZ_WYJSCIA':
+                                    fill_ms=minute_result['fill_ms']
+                                    minute_resolved+=1
+                                    continue
+                                else:
+                                    ambiguous_limit=True
+                                    minute_unresolved+=1
+                                    finish=minute_status
+                                    break
                         else:
                             continue
                     elif fill_ms is None:
@@ -4982,7 +5002,7 @@ def v630_complete_cohorts(PP, now_ms, drive_ok):
                         break
                 row['filled'] = bool(filled)
                 if ambiguous_limit:
-                    row['status']='LIMIT_FILL_5M_NIEJEDNOZNACZNY'
+                    row['status']=finish
                     row['fill_ms']=fill_ms
                     row['filled']=None  # wykonanie i wyjscie moga byc w roznym porzadku
                 elif not filled:
@@ -5060,10 +5080,10 @@ def v630_complete_cohorts(PP, now_ms, drive_ok):
 
     df_cols = {
         'v630_pelne_kohorty_24h.csv':(
-            'symbol','side','entry_type','setup_type','dzien_utc','snapshot_ms',
+            'event_id','snapshoty_w_zdarzeniu','symbol','side','entry_type','setup_type','dzien_utc','snapshot_ms',
             'first_candle_ms','horizon_end_ms','entry','sl','tp1','status',
             'wymagane_swiece','dostepne_swiece','brakujace_swiece','filled',
-            'R_net_szacunek','trend_1h','struktura_15m','wybicie_5m','rvol_5m',
+            'R_net_szacunek','rozwiazanie_1m','trend_1h','struktura_15m','wybicie_5m','rvol_5m',
             'oi_status','data_quality'),
         'v630_porownywalne_grupy.csv':(
             'dzien_utc','side','entry_type','kandydaci','dojrzale_24h',
@@ -5098,9 +5118,36 @@ def v630_complete_cohorts(PP, now_ms, drive_ok):
         ('v630_porownywalne_grupy.csv','v631_porownywalne_grupy.csv'),
         ('v630_agregaty_wielodniowe.csv','v631_agregaty_wielodniowe.csv')):
         shutil.copyfile(OUT/old_name,OUT/new_name)
+    # Zapis zweryfikowanych 1m na Drive; brak danych nie jest wypelniany sztucznie.
+    cache_cutoff_1m=int(now_ms)-V630_CACHE_KEEP_DAYS*DAY_MS
+    minute_saved=0
+    for sym in minute_dirty:
+        if not minute_cache_enabled:break
+        try:
+            bars=minute_cache.get(sym,{})
+            keep=[bars[ts] for ts in sorted(bars)
+                  if cache_cutoff_1m<=ts and ts+minute_step<=now_ms]
+            payload={'schema':1,'symbol':sym,'interval':'1m','priceType':'LAST',
+                     'candles':keep}
+            fn=minute_dir/(sym+'.json')
+            tmp=fn.with_suffix('.json.tmp')
+            tmp.write_text(json.dumps(payload,separators=(',',':')),encoding='utf-8')
+            tmp.replace(fn)
+            minute_saved+=len(keep)
+        except Exception as exc:
+            minute_errors.append({'symbol':sym,'five_start':None,
+                                  'error':'CACHE_1M_WRITE:'+str(exc)[:140]})
+    pd.DataFrame(minute_errors,columns=['symbol','five_start','error']).to_csv(
+        OUT/'v632_bledy_1m.csv',index=False)
+    # Eksport pod wersja V6.32 i dotychczasowe nazwy dla kompatybilnosci.
+    for old,new in (
+        ('v631_pelne_kohorty_24h.csv','v632_pelne_kohorty_24h.csv'),
+        ('v631_porownywalne_grupy.csv','v632_porownywalne_grupy.csv'),
+        ('v631_agregaty_wielodniowe.csv','v632_agregaty_wielodniowe.csv')):
+        shutil.copyfile(OUT/old,OUT/new)
     status_counts = dict(Counter(row['status'] for row in results))
     diag = {
-        'version':'V6.31','history_rows':len(all_rows),
+        'version':'V6.32','history_rows':len(all_rows),
         'unikalne_kandydatury':len(candidates),'niepoprawne_rekordy':invalid,
         'dojrzale_24h':len(candidates)-not_mature,
         'nastepna_dojrzalosc_utc':(
@@ -5114,7 +5161,12 @@ def v630_complete_cohorts(PP, now_ms, drive_ok):
         'missing_candles_before':missing_before,'missing_candles_after':missing_after,
         'symbols_skipped_limit':symbols_skipped,'symbols_partial_budget':limited_symbols,
         'conflicting_bars':conflicting_bars,'statusy':status_counts,
-        'limit_niejednoznaczne':status_counts.get('LIMIT_FILL_5M_NIEJEDNOZNACZNY',0),
+        '1m_calls':minute_calls,'1m_cache_loaded':minute_from_cache,
+        '1m_api_bars':minute_from_api,'1m_cache_saved':minute_saved,
+        '1m_resolved':minute_resolved,'1m_unresolved':minute_unresolved,
+        '1m_errors':len(minute_errors),'events':len(candidates),
+        'events_snapshot_rows':len(event_audit),
+        'limit_niejednoznaczne':sum(v for k,v in status_counts.items() if k.startswith('LIMIT_1M_') and k!='LIMIT_1M_PO_WEJSCIU_BEZ_WYJSCIA'),
         'symbole_z_raportem_postepu':len(progress_rows),'trafienia_limitu_api':limits_reached,
         'history_read_error':input_error,
         'coverage_rule':'288 nieprzerwanych zamknietych swiec 5m od ceil(snapshot_ms/300000)',
@@ -5126,7 +5178,8 @@ def v630_complete_cohorts(PP, now_ms, drive_ok):
     }
     save_json('v630_diagnostyka.json',diag,pretty=True)
     save_json('v631_diagnostyka.json',diag,pretty=True)
-    print('V6.31: dojrzale',diag['dojrzale_24h'],'pelne',diag['pelne_24h'],
+    save_json('v632_diagnostyka.json',diag,pretty=True)
+    print('V6.32: dojrzale',diag['dojrzale_24h'],'pelne',diag['pelne_24h'],
           'API',api_requests,'braki',missing_after,'cache',cache_ok,
           'BRAMKA BEZ ZMIAN')
 
@@ -5542,6 +5595,7 @@ def main():
     v625_evaluate(PP,now_ms,drive_ok)
     v630_selftest()
     v631_selftest()
+    v632_selftest()
     v630_complete_cohorts(PP,now_ms,drive_ok)
     v631_setup_readiness(live,now_ms)
     v619_drive = v619_drive_status(drive_ok, arch, oi_hist, now_ms)
