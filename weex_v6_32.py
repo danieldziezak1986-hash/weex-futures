@@ -4639,32 +4639,17 @@ def v630_complete_cohorts(PP, now_ms, drive_ok):
     all_rows = all_rows[-V625_MAX_HISTORY:]
     all_rows.sort(key=lambda x: int(number(x.get('snapshot_ms'))))
 
-    unique = {}
-    invalid = 0
-    for x in all_rows:
-        sym = str(x.get('symbol') or '')
-        side = str(x.get('side') or '').upper()
-        mode = str(x.get('entry_type') or '').upper()
-        typ = str(x.get('setup_type') or '')
-        t = int(number(x.get('snapshot_ms')))
-        e = number(x.get('entry'))
-        sl = number(x.get('sl'))
-        tp = number(x.get('tp1'))
-        if not (sym and len(sym) <= 40 and all(ch.isalnum() or ch in '_-' for ch in sym)
-                and side in ('LONG','SHORT') and mode in ('MARKET','LIMIT')
-                and t > 0 and e > 0 and sl > 0 and tp > 0):
-            invalid += 1
-            continue
-        risk = e-sl if side == 'LONG' else sl-e
-        gain = tp-e if side == 'LONG' else e-tp
-        if risk <= 0 or gain <= 0:
-            invalid += 1
-            continue
-        key = (sym, side, mode, typ, t // V625_DEDUP_MS)
-        if key not in unique:
-            unique[key] = x
-
-    candidates = list(unique.values())
+    candidates,event_rows,event_audit,invalid=v632_dedup_events(all_rows)
+    unique={row['_v632_event_id']:row for row in candidates}
+    pd.DataFrame(event_rows,columns=[
+        'event_id','symbol','side','entry_type','setup_type',
+        'first_snapshot_ms','last_snapshot_ms','liczba_snapshotow',
+        'first_entry','last_entry','first_sl','last_sl',
+        'first_tp1','last_tp1']).to_csv(OUT/'v632_wydarzenia_sygnalow.csv',index=False)
+    pd.DataFrame(event_audit,columns=[
+        'event_id','symbol','side','entry_type','setup_type',
+        'snapshot_ms','entry','sl','tp1','nowy_event']).to_csv(
+        OUT/'v632_dedup_audyt.csv',index=False)
     eligible = defaultdict(list)
     not_mature = 0
     next_maturity = None
@@ -4684,6 +4669,84 @@ def v630_complete_cohorts(PP, now_ms, drive_ok):
         cache_dir.mkdir(parents=True, exist_ok=True)
     except Exception:
         cache_ok = False
+
+    # Historię 1m pobieramy wylacznie w 5m z potencjalnie niejednoznacznym LIMIT.
+    minute_step=INTERVAL_MS['1m']
+    minute_dir=(Path(DRIVE_DIR) if drive_ok else OUT)/'v632_weex_last_1m'
+    minute_cache={}
+    minute_dirty=set()
+    minute_calls=0
+    minute_errors=[]
+    minute_from_cache=0
+    minute_from_api=0
+    minute_resolved=0
+    minute_unresolved=0
+    try:
+        minute_dir.mkdir(parents=True,exist_ok=True)
+        minute_cache_enabled=True
+    except Exception:
+        minute_cache_enabled=False
+
+    def v632_minute_cache(sym):
+        nonlocal minute_from_cache
+        if sym not in minute_cache:
+            bars={}
+            fn=minute_dir/(sym+'.json')
+            if minute_cache_enabled and fn.exists():
+                try:
+                    payload=json.loads(fn.read_text(encoding='utf-8'))
+                    if (payload.get('symbol')==sym and payload.get('interval')=='1m'
+                            and payload.get('priceType')=='LAST'):
+                        for q in payload.get('candles',[]):
+                            try:
+                                bt=int(q[0]);bo=float(q[1]);bh=float(q[2])
+                                bl=float(q[3]);bc=float(q[4])
+                                if (bt+minute_step<=now_ms and
+                                        v630_validate_bar(bt,bo,bh,bl,bc,minute_step)):
+                                    bars[bt]=[bt,bo,bh,bl,bc]
+                                    minute_from_cache+=1
+                            except (ValueError,TypeError,IndexError):
+                                pass
+                except Exception as exc:
+                    minute_errors.append({'symbol':sym,'five_start':None,
+                                          'error':'CACHE_READ:'+str(exc)[:140]})
+            minute_cache[sym]=bars
+        return minute_cache[sym]
+
+    def v632_get_minutes(sym,five_start):
+        nonlocal minute_calls,minute_from_api
+        bars=v632_minute_cache(sym)
+        expected=[five_start+j*minute_step for j in range(5)]
+        if all(ts in bars for ts in expected):
+            return bars
+        if minute_calls>=V632_MAX_1M_CALLS:
+            minute_errors.append({'symbol':sym,'five_start':five_start,
+                                  'error':'LIMIT_1M_API'})
+            return bars
+        minute_calls+=1
+        try:
+            records=normalize_klines(unwrap(weex('/capi/v3/market/historyKlines',{
+                'symbol':sym,'interval':'1m','startTime':five_start,
+                'endTime':five_start+4*minute_step,'limit':5,'priceType':'LAST'})))
+            for q in records:
+                try:
+                    bt=int(number(q[0]));bo=number(q[1]);bh=number(q[2])
+                    bl=number(q[3]);bc=number(q[4])
+                    if (bt in expected and bt+minute_step<=now_ms and
+                            v630_validate_bar(bt,bo,bh,bl,bc,minute_step)):
+                        if bt not in bars:
+                            minute_from_api+=1
+                        bars[bt]=[bt,bo,bh,bl,bc]
+                        minute_dirty.add(sym)
+                except (IndexError,TypeError,ValueError):
+                    continue
+            if not all(ts in bars for ts in expected):
+                minute_errors.append({'symbol':sym,'five_start':five_start,
+                                      'error':'NIEPELNY_ZAKRES_1M'})
+        except Exception as exc:
+            minute_errors.append({'symbol':sym,'five_start':five_start,
+                                  'error':'API_1M:'+str(exc)[:160]})
+        return bars
 
     all_bars = {}
     api_requests = 0
