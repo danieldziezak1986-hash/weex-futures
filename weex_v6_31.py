@@ -4903,7 +4903,9 @@ def v630_complete_cohorts(PP, now_ms, drive_ok):
         'history_read_error':input_error,
         'coverage_rule':'288 nieprzerwanych zamknietych swiec 5m od ceil(snapshot_ms/300000)',
         'cost_assumption':'0.16% roundtrip, bez poslizgu, spreadu i fundingu',
-        'intrabar_rule':'SL przed TP w jednej swiecy; LIMIT fill wewnatrz swiecy niejednoznaczny',
+        'intrabar_rule':'LIMIT fill-bar SL/TP => NIEJEDNOZNACZNY i wykluczony z sredniej; po wypelnieniu SL przed TP w tej samej swiecy',
+        'legacy_early_v625_caution':'V625 liczy szybkie SL/TP i moze zawierac niejednoznaczne LIMIT; NIE porownuj bezposrednio ze statystyka pelnych V631 kohort',
+        'full_cohort_gate':'Wymagane 288 zamknietych swiec i brak niejednoznacznych wynikow LIMIT',
         'trade_gate_changed':False,'automatic_approval':False
     }
     save_json('v630_diagnostyka.json',diag,pretty=True)
