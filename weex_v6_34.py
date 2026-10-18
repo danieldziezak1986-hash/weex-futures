@@ -4850,6 +4850,7 @@ def v634_early_limits(PP,now_ms,drive_ok):
     try:cache_dir.mkdir(parents=True,exist_ok=True)
     except Exception:cache_on=False
     api_calls=0; api_errors=[]; api_bars=0
+    consecutive_api_failures=0; api_circuit_open=False
     cache_bars_loaded=0;cache_bars_saved=0; missing_start=0;missing_end=0
     processed=0;skipped=0
     sym_list=sorted(eligible,key=lambda sym:min(z[1] for z in eligible[sym]))
@@ -4899,13 +4900,15 @@ def v634_early_limits(PP,now_ms,drive_ok):
             chunks.append((a,b))
         calls_sym=0
         for first,last in chunks:
-            if api_calls>=V634_MAX_1M_CALLS or calls_sym>=V634_MAX_CALLS_PER_SYMBOL:
+            if (api_calls>=V634_MAX_1M_CALLS or
+                    calls_sym>=V634_MAX_CALLS_PER_SYMBOL or api_circuit_open):
                 break
             api_calls+=1;calls_sym+=1
             try:
                 payload=unwrap(weex('/capi/v3/market/historyKlines',{
                     'symbol':sym,'interval':'1m','startTime':int(first),
                     'endTime':int(last),'limit':100,'priceType':'LAST'}))
+                accepted_this_request=0
                 for q in normalize_klines(payload):
                     try:
                         ts=int(number(q[0]));o=number(q[1]);hi=number(q[2])
@@ -4914,10 +4917,18 @@ def v634_early_limits(PP,now_ms,drive_ok):
                                 and v630_validate_bar(ts,o,hi,lo,cl,step)):
                             if ts not in bars:api_bars+=1
                             bars[ts]=[ts,o,hi,lo,cl]
+                            accepted_this_request+=1
                     except (ValueError,TypeError,IndexError):pass
+                consecutive_api_failures=0 if accepted_this_request else consecutive_api_failures+1
             except Exception as exc:
+                consecutive_api_failures+=1
                 api_errors.append({'symbol':sym,'start_ms':first,'end_ms':last,
                                    'rodzaj':'API_HISTORY_1M','blad':str(exc)[:160]})
+            if consecutive_api_failures>=6:
+                api_circuit_open=True
+                api_errors.append({'symbol':sym,'start_ms':first,'end_ms':last,
+                                   'rodzaj':'CIRCUIT_BREAKER',
+                                   'blad':'6 pustych lub blednych odpowiedzi API; wstrzymano dalsze pobieranie'})
         missing_end+=len(required.difference(bars))
         for _,_,row in work:
             result=v634_eval_limit_1m(
@@ -4956,12 +4967,14 @@ def v634_early_limits(PP,now_ms,drive_ok):
           'nieweryfikowalne_stare':counts.get('BRAK_TTL_HISTORYCZNY',0),
           'api_1m_calls':api_calls,'api_1m_bars_added':api_bars,
           'api_1m_errors':sum(x['rodzaj']=='API_HISTORY_1M' for x in api_errors),
+          'api_circuit_open':api_circuit_open,
           'cache_active':cache_on,'cache_on_drive':bool(cache_on and drive_ok),
           'cache_loaded':cache_bars_loaded,'cache_saved':cache_bars_saved,
           'missing_1m_before':missing_start,'missing_1m_after':missing_end,
           'skipped_symbols_budget':skipped,'statusy':dict(counts),
           'method':'Pelen przebieg 1m od zlecenia do TTL, z niejednoznacznymi minutami granicznymi',
           'independent_from_24h':'TAK; wyniki TTL nie sa dopisywane do kohort 24h',
+          'partial_minute_policy':'Jesli graniczna minuta mogla dotknac poziomu, wynik NIEJEDNOZNACZNY',
           'costs':'0.16 pct roundtrip est.; brak spreadu, slippage, fundingu',
           'trade_gate_changed':False}
     save_json('v634_diagnostyka.json',diag,pretty=True)
