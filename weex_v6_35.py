@@ -4519,8 +4519,13 @@ def v632_dedup_events(rows):
                 matched=ev
                 break
         if matched is None:
-            digest='|'.join((sym,side,mode,typ,str(ttl_key),str(t),
-                             format(e,'.12g'),format(sl,'.12g'),format(tp,'.12g')))
+            parts=[sym,side,mode,typ,str(t),
+                   format(e,'.12g'),format(sl,'.12g'),format(tp,'.12g')]
+            # Zachowaj dotychczasowe ID dla sygnalow bez TTL i MARKET.
+            # Nowe LIMIT-y z roznym TTL musza dostac oddzielne ID.
+            if mode=='LIMIT' and ttl_key is not None:
+                parts.append(str(ttl_key))
+            digest='|'.join(parts)
             event_id=hashlib.sha256(digest.encode('utf-8')).hexdigest()[:20]
             matched={'id':event_id,'first':dict(x),'start_t':t,'last_t':t,
                      'snapshots':0,'last_prices':(e,sl,tp)}
