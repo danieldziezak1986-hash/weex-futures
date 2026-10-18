@@ -4691,6 +4691,12 @@ def v633_selftest():
     assert v633_ttl_ms(t,None,'LIMIT') is None
     assert v633_ttl_ms(t,0,'LIMIT') is None
     assert v633_ttl_ms(t,None,'MARKET') is None
+    base={'symbol':'HBARUSDT','side':'LONG','entry_type':'LIMIT','setup_type':'TEST',
+          'snapshot_ms':t,'entry':0.09,'sl':0.085,'tp1':0.10}
+    old=dict(base)
+    new=dict(base,wait_h=4,snapshot_ms=t+60000)
+    ev,_,_,_=v632_dedup_events([old,new])
+    assert len(ev)==2  # nie lacz zlecen bez TTL z nowymi
     return True
 
 
@@ -5329,7 +5335,8 @@ def v630_complete_cohorts(PP, now_ms, drive_ok):
         'history_read_error':input_error,
         'coverage_rule':'288 nieprzerwanych zamknietych swiec 5m od ceil(snapshot_ms/300000)',
         'cost_assumption':'0.16% roundtrip, bez poslizgu, spreadu i fundingu',
-        'intrabar_rule':'LIMIT fill-bar SL/TP => NIEJEDNOZNACZNY i wykluczony z sredniej; po wypelnieniu SL przed TP w tej samej swiecy',
+        'intrabar_rule':'LIMIT: kolejnosc fill SL TP sprawdzana na 1m; w tej samej 1m nieweryfikowalne; po wypelnieniu 5m SL konserwatywnie pierwszy',
+        'limit_lifecycle':'LIMIT uwzglednia wait_h i anulowanie po TP przed wejsciem; stare sygnaly bez TTL wykluczone',
         'legacy_early_v625_caution':'V625 liczy szybkie SL/TP i moze zawierac niejednoznaczne LIMIT; NIE porownuj bezposrednio ze statystyka pelnych V631 kohort',
         'full_cohort_gate':'Wymagane 288 zamknietych swiec i brak niejednoznacznych wynikow LIMIT',
         'trade_gate_changed':False,'automatic_approval':False
@@ -5760,6 +5767,7 @@ def main():
     v631_setup_readiness(live,now_ms)
     v632_funding_and_flags(live,PP,now_ms)
     shutil.copyfile(OUT/'v632_funding_i_filtry.csv',OUT/'v633_funding_i_filtry.csv')
+    shutil.copyfile(OUT/'v632_funding_diagnostyka.json',OUT/'v633_funding_diagnostyka.json')
     v619_drive = v619_drive_status(drive_ok, arch, oi_hist, now_ms)
     v619_oi = v619_oi_quality(v618_oi)
     v619_reasons = v619_rejection_summary(v618_reject)
