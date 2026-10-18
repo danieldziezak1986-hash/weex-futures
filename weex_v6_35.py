@@ -4519,7 +4519,7 @@ def v632_dedup_events(rows):
                 matched=ev
                 break
         if matched is None:
-            digest='|'.join((sym,side,mode,typ,str(t),
+            digest='|'.join((sym,side,mode,typ,str(ttl_key),str(t),
                              format(e,'.12g'),format(sl,'.12g'),format(tp,'.12g')))
             event_id=hashlib.sha256(digest.encode('utf-8')).hexdigest()[:20]
             matched={'id':event_id,'first':dict(x),'start_t':t,'last_t':t,
@@ -4746,6 +4746,11 @@ def v632_selftest():
     assert len(ev2)==2 and len(details2)==2 and invalid2==0
     assert ev2[0]['_v632_snapshots']==2
     assert ev2[0]['_v632_event_id']!=ev2[1]['_v632_event_id']
+    # Identical price and time but distinct TTL must have distinct IDs.
+    diff_ttl=[dict(ttl_base,wait_h=2),
+              dict(ttl_base,wait_h=4)]
+    z,_,_,_=v632_dedup_events(diff_ttl)
+    assert len(z)==2 and len(set(x['_v632_event_id'] for x in z))==2
     return True
 
 
