@@ -4493,7 +4493,10 @@ def v632_dedup_events(rows):
         if risk<=0 or gain<=0:
             invalid += 1
             continue
-        key = (sym,side,mode,typ)
+        # TTL nalezy do tozsamosci zlecenia. Starszy snapshot bez TTL
+        # nie moze polaczyc sie z nowym snapshotem z potwierdzonym terminem.
+        ttl_key = (number(x.get('wait_h'),None) if mode=='LIMIT' else None)
+        key = (sym,side,mode,typ,ttl_key)
         matched = None
         for ev in reversed(groups[key]):
             if t < ev['last_t']:
@@ -4540,6 +4543,7 @@ def v632_dedup_events(rows):
                            'first_snapshot_ms':ev['start_t'],
                            'last_snapshot_ms':ev['last_t'],
                            'liczba_snapshotow':ev['snapshots'],
+                           'wait_h':x.get('wait_h'),
                            'first_entry':x.get('entry'),'last_entry':ev['last_prices'][0],
                            'first_sl':x.get('sl'),'last_sl':ev['last_prices'][1],
                            'first_tp1':x.get('tp1'),'last_tp1':ev['last_prices'][2]})
@@ -4750,7 +4754,7 @@ def v630_complete_cohorts(PP, now_ms, drive_ok):
     pd.DataFrame(event_rows,columns=[
         'event_id','symbol','side','entry_type','setup_type',
         'first_snapshot_ms','last_snapshot_ms','liczba_snapshotow',
-        'first_entry','last_entry','first_sl','last_sl',
+        'wait_h','first_entry','last_entry','first_sl','last_sl',
         'first_tp1','last_tp1']).to_csv(OUT/'v632_wydarzenia_sygnalow.csv',index=False)
     pd.DataFrame(event_audit,columns=[
         'event_id','symbol','side','entry_type','setup_type',
