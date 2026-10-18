@@ -4665,7 +4665,7 @@ def v632_funding_and_flags(live, PP, now_ms):
         rows.append(row)
     pd.DataFrame(rows,columns=columns).to_csv(OUT/'v632_funding_i_filtry.csv',index=False)
     save_json('v632_funding_diagnostyka.json',{
-        'version':'V6.32','setupy':len(rows),
+        'version':'V6.33','setupy':len(rows),
         'z_rzeczywista_stawka_funding':sum(r['funding_ostatni_decimal'] is not None for r in rows),
         'z_czasem_kolejnego_fundingu':sum(r['funding_next_ms'] is not None for r in rows),
         'z_brakami_flag':sum(r['brak_danych_filtrow']>0 for r in rows),
