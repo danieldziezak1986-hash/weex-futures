@@ -5103,6 +5103,31 @@ def v630_complete_cohorts(PP, now_ms, drive_ok):
         'event_id','symbol','side','entry_type','setup_type',
         'snapshot_ms','entry','sl','tp1','nowy_event']).to_csv(
         OUT/'v632_dedup_audyt.csv',index=False)
+    # V6.35: audyt nowych ID i zmian okresow waznosci.
+    shutil.copyfile(OUT/'v632_wydarzenia_sygnalow.csv',
+                    OUT/'v635_wydarzenia_sygnalow.csv')
+    shutil.copyfile(OUT/'v632_dedup_audyt.csv',
+                    OUT/'v635_dedup_audyt.csv')
+    save_json('v635_dedup_diagnostyka.json',{
+        'version':'V6.35',
+        'history_rows':len(all_rows),
+        'unique_events':len(candidates),
+        'repeated_snapshots':len(all_rows)-len(candidates)-invalid,
+        'invalid_rows':invalid,
+        'events_with_limit_ttl':sum(
+            str(x.get('entry_type')).upper()=='LIMIT' and
+            number(x.get('wait_h'),None) is not None and
+            number(x.get('wait_h'))>0 for x in candidates),
+        'events_without_limit_ttl':sum(
+            str(x.get('entry_type')).upper()=='LIMIT' and
+            (number(x.get('wait_h'),None) is None or
+             number(x.get('wait_h'))<=0) for x in candidates),
+        'unique_ids':len(set(x.get('_v632_event_id') for x in candidates)),
+        'id_collisions':len(candidates)-len(set(x.get('_v632_event_id') for x in candidates)),
+        'limit_expiry_split_enabled':True,
+        'trade_gate_changed':False,
+        'caution':'Deduplikacja nie oznacza rzeczywistych wykonanych transakcji'
+    },pretty=True)
     eligible = defaultdict(list)
     not_mature = 0
     next_maturity = None
