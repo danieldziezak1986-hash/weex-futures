@@ -4767,7 +4767,11 @@ def v630_complete_cohorts(PP, now_ms, drive_ok):
         t = int(number(x['snapshot_ms']))
         first, end = v630_bounds(t, step)
         if end <= now_ms:
-            eligible[str(x['symbol'])].append((first, end))
+            # Bez TTL nie pobieraj 288 swiec tylko po to, by i tak
+            # uznac historyczny LIMIT za nieweryfikowalny.
+            if (str(x.get('entry_type')).upper()!='LIMIT' or
+                    v633_ttl_ms(t,x.get('wait_h'),'LIMIT') is not None):
+                eligible[str(x['symbol'])].append((first, end))
         else:
             not_mature += 1
             if next_maturity is None or end < next_maturity:
@@ -5286,9 +5290,19 @@ def v630_complete_cohorts(PP, now_ms, drive_ok):
         ('v631_porownywalne_grupy.csv','v632_porownywalne_grupy.csv'),
         ('v631_agregaty_wielodniowe.csv','v632_agregaty_wielodniowe.csv')):
         shutil.copyfile(OUT/old,OUT/new)
+    for old_name,new_name in (
+        ('v632_pelne_kohorty_24h.csv','v633_pelne_kohorty_24h.csv'),
+        ('v632_porownywalne_grupy.csv','v633_porownywalne_grupy.csv'),
+        ('v632_agregaty_wielodniowe.csv','v633_agregaty_wielodniowe.csv')):
+        shutil.copyfile(OUT/old_name,OUT/new_name)
+    pd.DataFrame([
+        {'status':key,'liczba':value} for key,value in
+        sorted(Counter(r['status'] for r in results).items())
+    ],columns=['status','liczba']).to_csv(OUT/'v633_stany_limit.csv',index=False)
+
     status_counts = dict(Counter(row['status'] for row in results))
     diag = {
-        'version':'V6.32','history_rows':len(all_rows),
+        'version':'V6.33','history_rows':len(all_rows),
         'unikalne_kandydatury':len(candidates),'niepoprawne_rekordy':invalid,
         'dojrzale_24h':len(candidates)-not_mature,
         'nastepna_dojrzalosc_utc':(
@@ -5302,6 +5316,9 @@ def v630_complete_cohorts(PP, now_ms, drive_ok):
         'missing_candles_before':missing_before,'missing_candles_after':missing_after,
         'symbols_skipped_limit':symbols_skipped,'symbols_partial_budget':limited_symbols,
         'conflicting_bars':conflicting_bars,'statusy':status_counts,
+        'limit_brak_ttl_w_starej_historii':status_counts.get('LIMIT_BRAK_TTL_W_ARCHIWUM',0),
+        'limit_wygasl':status_counts.get('LIMIT_WYGASL_NIEWYPELNIONY',0),
+        'limit_anulowany_tp_przed_wejsciem':status_counts.get('LIMIT_ANULOWANY_TP_PRZED_WEJSCIEM',0),
         '1m_calls':minute_calls,'1m_cache_loaded':minute_from_cache,
         '1m_api_bars':minute_from_api,'1m_cache_saved':minute_saved,
         '1m_resolved':minute_resolved,'1m_unresolved':minute_unresolved,
@@ -5320,7 +5337,8 @@ def v630_complete_cohorts(PP, now_ms, drive_ok):
     save_json('v630_diagnostyka.json',diag,pretty=True)
     save_json('v631_diagnostyka.json',diag,pretty=True)
     save_json('v632_diagnostyka.json',diag,pretty=True)
-    print('V6.32: dojrzale',diag['dojrzale_24h'],'pelne',diag['pelne_24h'],
+    save_json('v633_diagnostyka.json',diag,pretty=True)
+    print('V6.33: dojrzale',diag['dojrzale_24h'],'pelne',diag['pelne_24h'],
           'API',api_requests,'braki',missing_after,'cache',cache_ok,
           'BRAMKA BEZ ZMIAN')
 
