@@ -4587,6 +4587,84 @@ def v632_resolve_limit_1m(side, entry, sl, tp, five_start, minute_bars):
             'fill_ms':fill_ms,'exit_ms':None,'outcome':None}
 
 
+
+def v632_funding_and_flags(live, PP, now_ms):
+    """Wyraznie rozdziel funding decimal, procent, Z-score i braki danych."""
+    columns=['symbol','side','entry_type','setup_type','entry','sl','tp1',
+             'ocena_modelu','status_bramki','do_handlu',
+             'funding_ostatni_decimal','funding_ostatni_pct',
+             'funding_prognozowany_decimal','funding_prognozowany_pct',
+             'funding_z_score_bez_jednostki','funding_collect_cycle_min',
+             'funding_dane_ms','funding_wiek_min','funding_next_ms',
+             'funding_status_danych','filtr_struktura_15m',
+             'filtr_trend_1h','filtr_wybicie_5m','filtr_rvol_5m',
+             'potwierdzone_filtry','brak_danych_filtrow',
+             'brakujace_filtry','uwaga']
+    def status_filter(v):
+        if v is None or str(v).strip().lower() in ('','nan','none'):
+            return 'BRAK_DANYCH'
+        if v is True or str(v).strip().lower() in ('true','tak','yes','1'):
+            return 'TAK'
+        if v is False or str(v).strip().lower() in ('false','nie','no','0'):
+            return 'NIE'
+        return 'BRAK_DANYCH'
+    rows=[]
+    for x in live:
+        sym=str(x.get('symbol') or '')
+        raw=(PP.get(sym) or {}).get('raw') or {}
+        premium=raw.get('premium')
+        if isinstance(premium,list):
+            premium=premium[0] if premium else None
+        if not isinstance(premium,dict):
+            premium={}
+        rate=number(premium.get('lastFundingRate'),None)
+        forecast=number(premium.get('forecastFundingRate'),None)
+        next_t=int(number(premium.get('nextFundingTime')))
+        source_t=int(number(premium.get('time')))
+        cycle=number(premium.get('collectCycle'),None)
+        age=(now_ms-source_t)/60000 if source_t>0 else None
+        age=round(age,2) if age is not None else None
+        z=number(x.get('funding_z'),None)
+        statuses={
+            'filtr_struktura_15m':status_filter(x.get('v622_struktura_15m_ok')),
+            'filtr_trend_1h':status_filter(x.get('v622_trend_1h_ok')),
+            'filtr_wybicie_5m':status_filter(x.get('v622_wybicie_5m_ok')),
+            'filtr_rvol_5m':status_filter(x.get('v622_rvol_5m_ok'))}
+        good=sum(v=='TAK' for v in statuses.values())
+        missing=sum(v=='BRAK_DANYCH' for v in statuses.values())
+        no=sum(v=='NIE' for v in statuses.values())
+        row={'symbol':sym,'side':x.get('side'),
+             'entry_type':x.get('entry_type'),'setup_type':x.get('setup_type'),
+             'entry':x.get('entry'),'sl':x.get('sl'),'tp1':x.get('tp1'),
+             'ocena_modelu':x.get('ocena'),'status_bramki':x.get('status_bramki'),
+             'do_handlu':x.get('do_handlu'),
+             'funding_ostatni_decimal':rate,
+             'funding_ostatni_pct':round(100*rate,6) if rate is not None else None,
+             'funding_prognozowany_decimal':forecast,
+             'funding_prognozowany_pct':round(100*forecast,6) if forecast is not None else None,
+             'funding_z_score_bez_jednostki':z,
+             'funding_collect_cycle_min':cycle,
+             'funding_dane_ms':source_t or None,
+             'funding_wiek_min':age,
+             'funding_next_ms':next_t or None,
+             'funding_status_danych':('BRAK_DANYCH' if rate is None else
+                'STARE_DANE' if age is not None and age>30 else 'DOSTEPNE'),
+             'potwierdzone_filtry':good,'brak_danych_filtrow':missing,
+             'brakujace_filtry':no,
+             'uwaga':'Funding ostatni/prognoza nie gwarantuja przyszlej oplaty; Z-score nie jest procentem'}
+        row.update(statuses)
+        rows.append(row)
+    pd.DataFrame(rows,columns=columns).to_csv(OUT/'v632_funding_i_filtry.csv',index=False)
+    save_json('v632_funding_diagnostyka.json',{
+        'version':'V6.32','setupy':len(rows),
+        'z_rzeczywista_stawka_funding':sum(r['funding_ostatni_decimal'] is not None for r in rows),
+        'z_czasem_kolejnego_fundingu':sum(r['funding_next_ms'] is not None for r in rows),
+        'z_brakami_flag':sum(r['brak_danych_filtrow']>0 for r in rows),
+        'bramka_zmieniona':False
+    },pretty=True)
+    print('V6.32 funding:',len(rows),'setupow; stawki dostepne:',
+          sum(r['funding_ostatni_decimal'] is not None for r in rows))
+
 def v632_selftest():
     minute=60000
     s=minute*10
@@ -5035,7 +5113,7 @@ def v630_complete_cohorts(PP, now_ms, drive_ok):
             'kandydaci':len(rr),'dojrzale_24h':len(mature),'pelne_24h':len(complete),
             'wypelnione':len(executed),
             'limit_niewypelnione':sum(row['status']=='LIMIT_NIEWYPELNIONY' for row in complete),
-            'limit_niejednoznaczne':sum(row['status']=='LIMIT_FILL_5M_NIEJEDNOZNACZNY' for row in mature),
+            'limit_niejednoznaczne':sum(row['status'].startswith('LIMIT_1M_') for row in mature),
             'brak_danych':sum(row['status']=='BRAK_PELNYCH_288_SWIEC' for row in mature),
             'pokrycie_dojrzalych_pct':round(100*cover,2) if mature else None,
             'sredni_R_net_wypelnione':round(sum(vals)/len(vals),5) if vals else None,
@@ -5067,7 +5145,7 @@ def v630_complete_cohorts(PP, now_ms, drive_ok):
                 'side':direction,'entry_type':entry_mode,'dojrzale_24h':len(mature),
                 'pelne_24h':len(complete),'pokrycie_pct':round(100*coverage,2) if mature else None,
                 'wypelnione':len(trades),
-                'limit_niejednoznaczne':sum(row['status']=='LIMIT_FILL_5M_NIEJEDNOZNACZNY' for row in mature),
+                'limit_niejednoznaczne':sum(row['status'].startswith('LIMIT_1M_') for row in mature),
                 'dni_dojrzale':days,'dni_transakcyjne':trade_days,
                 'symbole_transakcyjne':symbols_n,
                 'udzial_top_symbol_pct':round(100*top_share,2) if trades else None,
@@ -5598,6 +5676,7 @@ def main():
     v632_selftest()
     v630_complete_cohorts(PP,now_ms,drive_ok)
     v631_setup_readiness(live,now_ms)
+    v632_funding_and_flags(live,PP,now_ms)
     v619_drive = v619_drive_status(drive_ok, arch, oi_hist, now_ms)
     v619_oi = v619_oi_quality(v618_oi)
     v619_reasons = v619_rejection_summary(v618_reject)
