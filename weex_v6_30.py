@@ -4486,6 +4486,10 @@ def v630_complete_cohorts(PP, now_ms, drive_ok):
     missing_after = 0
     cache_cutoff = int(now_ms) - V630_CACHE_KEEP_DAYS * DAY_MS
     symbols = sorted(eligible, key=lambda sym: min(start for start, _ in eligible[sym]))
+    # Rotacja kolejek: nawet gdy >85 symboli, kazdy dostaje szanse w kolejnych przebiegach.
+    if symbols:
+        offset = (int(now_ms)//HOUR_MS * V630_MAX_SYMBOLS) % len(symbols)
+        symbols = symbols[offset:] + symbols[:offset]
     stop_all = False
 
     for sym_idx, sym in enumerate(symbols):
@@ -4712,8 +4716,39 @@ def v630_complete_cohorts(PP, now_ms, drive_ok):
             'status':('OCZEKUJE_24H' if not mature else
                       'NIEPELNA_PROBA' if cover < 0.99 else
                       'ZA_MALO_TRANSAKCJI_LUB_JEDEN_COIN' if len(executed)<60 or top_share > 0.25 else
-                      'DO_WALIDACJI_OOS'),
+                      'JEDEN_DZIEN_NIE_POTWIERDZA_PRZEWAGI'),
             'uwaga':'Jeden dzien nie dowodzi przewagi; porownywac rowniez pokrycie i niewypelnione LIMIT'})
+
+    # Walidacja zbiorcza per kierunek i typ: rozne dni, nie jeden pojedynczy impuls.
+    aggregate = []
+    for direction in ('LONG', 'SHORT'):
+        for entry_mode in ('MARKET', 'LIMIT'):
+            z = [row for row in results if row['side']==direction and row['entry_type']==entry_mode]
+            mature = [row for row in z if row['horizon_end_ms']<=now_ms]
+            complete = [row for row in mature if row['status'] in completed_status]
+            trades = [row for row in complete if row['R_net_szacunek'] is not None]
+            vals = [row['R_net_szacunek'] for row in trades]
+            days = len(set(row['dzien_utc'] for row in mature))
+            trade_days = len(set(row['dzien_utc'] for row in trades))
+            symbols_n = len(set(row['symbol'] for row in trades))
+            top_share = (max(Counter(row['symbol'] for row in trades).values(),default=0) /
+                         len(trades)) if trades else 0
+            coverage = len(complete)/len(mature) if mature else 0
+            is_sufficient = (coverage >= 0.99 and len(trades)>=60 and
+                             trade_days>=7 and symbols_n>=10 and top_share<=0.25)
+            aggregate.append({
+                'side':direction,'entry_type':entry_mode,'dojrzale_24h':len(mature),
+                'pelne_24h':len(complete),'pokrycie_pct':round(100*coverage,2) if mature else None,
+                'wypelnione':len(trades),'dni_dojrzale':days,'dni_transakcyjne':trade_days,
+                'symbole_transakcyjne':symbols_n,
+                'udzial_top_symbol_pct':round(100*top_share,2) if trades else None,
+                'win_rate_pct':round(100*sum(v>0 for v in vals)/len(vals),2) if vals else None,
+                'sredni_R_net':round(sum(vals)/len(vals),5) if vals else None,
+                'status':'DO_WALIDACJI_OOS' if is_sufficient else 'ZA_MALO_DANYCH',
+                'uwaga':'DO_WALIDACJI_OOS nie oznacza zgody na handel; brak kosztow fundingu i poslizgu'
+            })
+    pd.DataFrame(aggregate).to_csv(OUT / 'v630_agregaty_wielodniowe.csv',index=False)
+
     df_cols = {
         'v630_pelne_kohorty_24h.csv':(
             'symbol','side','entry_type','setup_type','dzien_utc','snapshot_ms',
