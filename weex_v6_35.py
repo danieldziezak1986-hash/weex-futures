@@ -4868,6 +4868,7 @@ def v634_early_limits(PP,now_ms,drive_ok):
     except Exception:cache_on=False
     api_calls=0; api_errors=[]; api_bars=0
     consecutive_api_failures=0; api_circuit_open=False
+    api_empty_responses=0
     cache_bars_loaded=0;cache_bars_saved=0; missing_start=0;missing_end=0
     processed=0;skipped=0
     sym_list=sorted(eligible,key=lambda sym:min(z[1] for z in eligible[sym]))
@@ -4936,7 +4937,13 @@ def v634_early_limits(PP,now_ms,drive_ok):
                             bars[ts]=[ts,o,hi,lo,cl]
                             accepted_this_request+=1
                     except (ValueError,TypeError,IndexError):pass
-                consecutive_api_failures=0 if accepted_this_request else consecutive_api_failures+1
+                # HTTP 200 bez swiec jest brakiem danych, nie awaria API:
+                # nie blokuj innych symboli po 6 poprawnych pustych odpowiedziach.
+                if accepted_this_request:
+                    consecutive_api_failures=0
+                else:
+                    api_empty_responses+=1
+                    consecutive_api_failures=0
             except Exception as exc:
                 consecutive_api_failures+=1
                 api_errors.append({'symbol':sym,'start_ms':first,'end_ms':last,
@@ -4945,7 +4952,7 @@ def v634_early_limits(PP,now_ms,drive_ok):
                 api_circuit_open=True
                 api_errors.append({'symbol':sym,'start_ms':first,'end_ms':last,
                                    'rodzaj':'CIRCUIT_BREAKER',
-                                   'blad':'6 pustych lub blednych odpowiedzi API; wstrzymano dalsze pobieranie'})
+                                   'blad':'6 kolejnych bledow API; wstrzymano dalsze pobieranie'})
         missing_end+=len(required.difference(bars))
         for _,_,row in work:
             result=v634_eval_limit_1m(
@@ -4972,12 +4979,17 @@ def v634_early_limits(PP,now_ms,drive_ok):
           'snapshot_ms','wait_h','expiry_ms','status','filled','fill_ms',
           'exit_ms','R_net_szacunek','minuty_sprawdzone','zrodlo','grupa']
     pd.DataFrame(rows,columns=cols).to_csv(OUT/'v634_limit_lifecycle.csv',index=False)
+    pd.DataFrame(rows,columns=cols).to_csv(OUT/'v635_limit_lifecycle.csv',index=False)
     pd.DataFrame(api_errors,columns=['symbol','start_ms','end_ms','rodzaj','blad']).to_csv(
         OUT/'v634_bledy_1m.csv',index=False)
+    pd.DataFrame(api_errors,columns=['symbol','start_ms','end_ms','rodzaj','blad']).to_csv(
+        OUT/'v635_bledy_1m.csv',index=False)
     counts=Counter(x['status'] for x in rows)
     pd.DataFrame([{'status':k,'liczba':v} for k,v in sorted(counts.items())],
                  columns=['status','liczba']).to_csv(OUT/'v634_limit_statusy.csv',index=False)
-    diag={'version':'V6.34','wszystkie_zdarzenia_limit':len(rows),
+    pd.DataFrame([{'status':k,'liczba':v} for k,v in sorted(counts.items())],
+                 columns=['status','liczba']).to_csv(OUT/'v635_limit_statusy.csv',index=False)
+    diag={'version':'V6.35','wszystkie_zdarzenia_limit':len(rows),
           'aktywnie_badane_waznosci_do_4h':processed,'dojrzale_przed_24h':sum(
               x['expiry_ms'] is not None and number(x['wait_h'])<=V634_MAX_TTL_H
               and x['expiry_ms']<=now_ms for x in rows),
@@ -4985,6 +4997,7 @@ def v634_early_limits(PP,now_ms,drive_ok):
           'api_1m_calls':api_calls,'api_1m_bars_added':api_bars,
           'api_1m_errors':sum(x['rodzaj']=='API_HISTORY_1M' for x in api_errors),
           'api_circuit_open':api_circuit_open,
+          'api_empty_responses':api_empty_responses,
           'cache_active':cache_on,'cache_on_drive':bool(cache_on and drive_ok),
           'cache_loaded':cache_bars_loaded,'cache_saved':cache_bars_saved,
           'missing_1m_before':missing_start,'missing_1m_after':missing_end,
@@ -4995,7 +5008,8 @@ def v634_early_limits(PP,now_ms,drive_ok):
           'costs':'0.16 pct roundtrip est.; brak spreadu, slippage, fundingu',
           'trade_gate_changed':False}
     save_json('v634_diagnostyka.json',diag,pretty=True)
-    print('V6.34: zlecenia LIMIT po TTL:',processed,'API 1m:',api_calls,
+    save_json('v635_diagnostyka.json',diag,pretty=True)
+    print('V6.35: zlecenia LIMIT po TTL:',processed,'API 1m:',api_calls,
           'braki 1m:',missing_end,'BRAMKA BEZ ZMIAN')
 
 
