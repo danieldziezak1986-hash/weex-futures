@@ -4563,6 +4563,9 @@ def v632_resolve_limit_1m(side, entry, sl, tp, five_start, minute_bars):
         stop=(lo<=sl if side=='LONG' else hi>=sl)
         take=(hi>=tp if side=='LONG' else lo<=tp)
         if not filled:
+            if take and not enter:
+                return {'status':'LIMIT_ANULOWANY_TP_PRZED_WEJSCIEM',
+                        'fill_ms':None,'exit_ms':ts,'outcome':None}
             if not enter:
                 continue
             filled=True
@@ -4668,17 +4671,39 @@ def v632_funding_and_flags(live, PP, now_ms):
     print('V6.32 funding:',len(rows),'setupow; stawki dostepne:',
           sum(r['funding_ostatni_decimal'] is not None for r in rows))
 
+def v633_ttl_ms(snapshot_ms, wait_h, side_mode):
+    """None = brak potwierdzonego terminu LIMIT, NIE zastepuj 24h."""
+    if side_mode != 'LIMIT':
+        return None
+    h=number(wait_h,None)
+    if h is None or not (0<h<=24):
+        return None
+    return int(snapshot_ms+round(h*HOUR_MS))
+
+
+def v633_selftest():
+    t=100000000
+    assert v633_ttl_ms(t,3,'LIMIT') == t+3*HOUR_MS
+    assert v633_ttl_ms(t,None,'LIMIT') is None
+    assert v633_ttl_ms(t,0,'LIMIT') is None
+    assert v633_ttl_ms(t,None,'MARKET') is None
+    return True
+
+
 def v632_selftest():
     minute=60000
     s=minute*10
     seq={
-        s+0*minute:[s+0*minute,102,104,101,103],  # TP moglo byc przed wejsciem
+        s+0*minute:[s+0*minute,102,102.5,101,102],  # TP jeszcze nie trafione
         s+1*minute:[s+1*minute,101,102,99,100],   # LIMIT wypelniony
         s+2*minute:[s+2*minute,100,104,99,103],  # TP po wejsciu
         s+3*minute:[s+3*minute,103,104,102,103],
         s+4*minute:[s+4*minute,103,104,102,103]}
     a=v632_resolve_limit_1m('LONG',100,98,103,s,seq)
     assert a['status']=='TP1' and a['fill_ms']==s+minute
+    earlier=dict(seq)
+    earlier[s]=[s,102,104,101,103]
+    assert v632_resolve_limit_1m('LONG',100,98,103,s,earlier)['status']=='LIMIT_ANULOWANY_TP_PRZED_WEJSCIEM'
     b=dict(seq)
     b[s+minute]=[s+minute,101,104,97,101]
     assert v632_resolve_limit_1m('LONG',100,98,103,s,b)['status']=='LIMIT_1M_NIEJEDNOZNACZNY'
@@ -5677,6 +5702,7 @@ def main():
     v630_selftest()
     v631_selftest()
     v632_selftest()
+    v633_selftest()
     v630_complete_cohorts(PP,now_ms,drive_ok)
     v631_setup_readiness(live,now_ms)
     v632_funding_and_flags(live,PP,now_ms)
