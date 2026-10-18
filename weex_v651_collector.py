@@ -1778,14 +1778,30 @@ def run_self_test():
     assert len(top150)==150 and top150[0][0]=='C179USDT'
     assert len(alltradfi)==27 and alltradfi[0][0]=='T0USDT'
     assert not any(c[0] in {s[0] for s in alltradfi} for c in top150)
-    for ex in [{'side':'LONG','entry':'100','sl':'98','tp1':'103','rr_gross':1.5,'rr_net_est':1.2,'reason_codes':[], 'trade_allowed':False},
-               {'side':'SHORT','entry':'100','sl':None,'tp1':'98','rr_gross':None,'rr_net_est':None,'reason_codes':[], 'trade_allowed':False},
-               {'side':'SHORT','entry':'100','sl':'102','tp1':'99','rr_gross':.5,'rr_net_est':.2,'reason_codes':['STRUCTURE_LIMITS_REWARD'],'trade_allowed':False}]:
+    # V6.51: no WATCH_ONLY without a confirmed structural TP1.
+    for ex, expected in [
+        ({'side':'LONG','entry':'100','sl':'98','tp1':'103',
+          'rr_gross':1.5,'rr_net_est':1.2,'reason_codes':[],
+          'trade_allowed':False}, 'REJECTED'),
+        ({'side':'LONG','entry':'100','sl':'98','tp1':'103',
+          'rr_gross':1.5,'rr_net_est':1.2,'tp1_basis':'SR_15m',
+          'tp1_structural_level':'103.1','reason_codes':[],
+          'trade_allowed':False}, 'WATCH_ONLY'),
+        ({'side':'SHORT','entry':'100','sl':None,'tp1':'98',
+          'rr_gross':None,'rr_net_est':None,'reason_codes':[],
+          'trade_allowed':False}, 'REJECTED'),
+        ({'side':'SHORT','entry':'100','sl':'102','tp1':'99',
+          'rr_gross':.5,'rr_net_est':.2,'tp1_basis':'SR_1h',
+          'tp1_structural_level':'98.9',
+          'reason_codes':['STRUCTURE_LIMITS_REWARD'],
+          'trade_allowed':False}, 'REJECTED'),
+    ]:
         item=classify_setup(dict(ex))
         assert not item['trade_allowed']
-        if ex['sl'] is None or 'STRUCTURE_LIMITS_REWARD' in ex['reason_codes']:
-            assert item['status']=='REJECTED'
-        else:assert item['status']=='WATCH_ONLY'
+        assert item['status']==expected, (ex, item['status'], expected)
+        assert item['tp1_potwierdzony']==bool(
+            ex.get('tp1_basis','').startswith('SR_') and
+            ex.get('tp1_structural_level'))
     print('PASS: candle edge, open bar, duplicates, LIMIT TTL, lookahead, SL order, symbols, classification')
 
 
