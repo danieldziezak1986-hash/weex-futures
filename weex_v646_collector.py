@@ -984,12 +984,12 @@ def limit_pullback_candidate(coin,feature,clock_ok=True,ttl_minutes=180):
         levels=[v for _,v in ls if 0<price-v<=2*atr15]
         if not levels:reasons.append('LIMIT_NO_SUPPORT');return classify_setup(out)
         entry=price_round(max(levels),dec,'DOWN')
-        stop=price_round(min(v for _,v in ls if v<=entry)-.25*atr15,dec,'DOWN')
+        stop=price_round(min(v for _,v in ls if v<=max(levels))-.25*atr15,dec,'DOWN')
     else:
         levels=[v for _,v in hs if 0<v-price<=2*atr15]
         if not levels:reasons.append('LIMIT_NO_RESISTANCE');return classify_setup(out)
         entry=price_round(min(levels),dec,'UP')
-        stop=price_round(max(v for _,v in hs if v>=entry)+.25*atr15,dec,'UP')
+        stop=price_round(max(v for _,v in hs if v>=min(levels))+.25*atr15,dec,'UP')
     risk=entry-stop if side=='LONG' else stop-entry
     if entry<=0 or risk<=0 or not .12<=100*risk/entry<=6:
         reasons.append('LIMIT_BAD_SL');return classify_setup(out)
