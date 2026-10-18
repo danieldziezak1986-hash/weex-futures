@@ -5030,6 +5030,7 @@ def v630_complete_cohorts(PP, now_ms, drive_ok):
         e = number(x['entry'])
         sl = number(x['sl'])
         tp = number(x['tp1'])
+        ttl_ms=v633_ttl_ms(t,x.get('wait_h'),mode)
         first, end = v630_bounds(t, step)
         row = {'symbol':sym,'side':side,'entry_type':mode,
                'event_id':x.get('_v632_event_id'),
@@ -5037,6 +5038,7 @@ def v630_complete_cohorts(PP, now_ms, drive_ok):
                'setup_type':str(x.get('setup_type') or ''),
                'dzien_utc':str(x.get('snapshot_utc') or '')[:10],
                'snapshot_ms':t,'first_candle_ms':first,'horizon_end_ms':end,
+               'wait_h':x.get('wait_h'),'limit_expiry_ms':ttl_ms,
                'entry':e,'sl':sl,'tp1':tp,
                'status':'','wymagane_swiece':expected_count,
                'dostepne_swiece':0,'brakujace_swiece':expected_count,
@@ -5056,7 +5058,9 @@ def v630_complete_cohorts(PP, now_ms, drive_ok):
             missing = sum(ts not in bars for ts in expected)
             row['dostepne_swiece'] = expected_count - missing
             row['brakujace_swiece'] = missing
-            if missing:
+            if mode=='LIMIT' and ttl_ms is None:
+                row['status']='LIMIT_BRAK_TTL_W_ARCHIWUM'
+            elif missing:
                 row['status'] = 'BRAK_PELNYCH_288_SWIEC'
             else:
                 filled = mode == 'MARKET'
@@ -5067,8 +5071,20 @@ def v630_complete_cohorts(PP, now_ms, drive_ok):
                 for ts in expected:
                     _, op, hi, lo, cl = bars[ts]
                     if not filled:
-                        if ((side == 'LONG' and lo <= e) or
-                                (side == 'SHORT' and hi >= e)):
+                        # LIMIT aktywny tylko do zapisanego terminu.
+                        # Swiece przecinajace moment wygasniecia nie sa
+                        # uznawane za pewne wykonanie zlecenia.
+                        if ts+step>ttl_ms:
+                            finish='LIMIT_WYGASL_NIEWYPELNIONY'
+                            break
+                        touched_entry=((side=='LONG' and lo<=e) or
+                                       (side=='SHORT' and hi>=e))
+                        hit_target_before=((side=='LONG' and hi>=tp) or
+                                           (side=='SHORT' and lo<=tp))
+                        if hit_target_before and not touched_entry:
+                            finish='LIMIT_ANULOWANY_TP_PRZED_WEJSCIEM'
+                            break
+                        if touched_entry:
                             filled = True
                             fill_ms = ts
                             if v631_limit_ambiguous_on_fill(side, hi, lo, sl, tp):
@@ -5076,6 +5092,12 @@ def v630_complete_cohorts(PP, now_ms, drive_ok):
                                     side,e,sl,tp,ts,v632_get_minutes(sym,ts))
                                 minute_status=minute_result['status']
                                 row['rozwiazanie_1m']=minute_status
+                                if minute_status=='LIMIT_ANULOWANY_TP_PRZED_WEJSCIEM':
+                                    filled=False
+                                    fill_ms=None
+                                    finish=minute_status
+                                    minute_resolved+=1
+                                    break
                                 if minute_status in ('SL','TP1'):
                                     outcome=minute_result['outcome']
                                     finish=minute_status
@@ -5112,7 +5134,10 @@ def v630_complete_cohorts(PP, now_ms, drive_ok):
                     row['fill_ms']=fill_ms
                     row['filled']=None  # wykonanie i wyjscie moga byc w roznym porzadku
                 elif not filled:
-                    row['status'] = 'LIMIT_NIEWYPELNIONY'
+                    row['status'] = (finish if finish in (
+                        'LIMIT_WYGASL_NIEWYPELNIONY',
+                        'LIMIT_ANULOWANY_TP_PRZED_WEJSCIEM') else
+                        'LIMIT_NIEWYPELNIONY')
                 else:
                     if outcome is None:
                         close_24h = bars[end-step][4]
@@ -5124,7 +5149,9 @@ def v630_complete_cohorts(PP, now_ms, drive_ok):
         results.append(row)
 
     completed_status = {'SL','TP1','SL_TP_JEDNA_SWIECA_SL_PIERWSZY',
-                        'TIME_24H','LIMIT_NIEWYPELNIONY'}
+                        'TIME_24H','LIMIT_NIEWYPELNIONY',
+                        'LIMIT_WYGASL_NIEWYPELNIONY',
+                        'LIMIT_ANULOWANY_TP_PRZED_WEJSCIEM'}
     by_group = defaultdict(list)
     for row in results:
         by_group[(row['dzien_utc'],row['side'],row['entry_type'])].append(row)
@@ -5140,7 +5167,10 @@ def v630_complete_cohorts(PP, now_ms, drive_ok):
         comparison.append({'dzien_utc':day,'side':side,'entry_type':mode,
             'kandydaci':len(rr),'dojrzale_24h':len(mature),'pelne_24h':len(complete),
             'wypelnione':len(executed),
-            'limit_niewypelnione':sum(row['status']=='LIMIT_NIEWYPELNIONY' for row in complete),
+            'limit_niewypelnione':sum(row['status'] in (
+                'LIMIT_NIEWYPELNIONY','LIMIT_WYGASL_NIEWYPELNIONY',
+                'LIMIT_ANULOWANY_TP_PRZED_WEJSCIEM') for row in complete),
+            'limit_brak_ttl':sum(row['status']=='LIMIT_BRAK_TTL_W_ARCHIWUM' for row in mature),
             'limit_niejednoznaczne':sum(row['status'].startswith('LIMIT_1M_') for row in mature),
             'brak_danych':sum(row['status']=='BRAK_PELNYCH_288_SWIEC' for row in mature),
             'pokrycie_dojrzalych_pct':round(100*cover,2) if mature else None,
@@ -5187,13 +5217,14 @@ def v630_complete_cohorts(PP, now_ms, drive_ok):
     df_cols = {
         'v630_pelne_kohorty_24h.csv':(
             'event_id','snapshoty_w_zdarzeniu','symbol','side','entry_type','setup_type','dzien_utc','snapshot_ms',
+            'wait_h','limit_expiry_ms',
             'first_candle_ms','horizon_end_ms','entry','sl','tp1','status',
             'wymagane_swiece','dostepne_swiece','brakujace_swiece','filled',
             'R_net_szacunek','rozwiazanie_1m','trend_1h','struktura_15m','wybicie_5m','rvol_5m',
             'oi_status','data_quality'),
         'v630_porownywalne_grupy.csv':(
             'dzien_utc','side','entry_type','kandydaci','dojrzale_24h',
-            'pelne_24h','wypelnione','limit_niewypelnione','limit_niejednoznaczne','brak_danych',
+            'pelne_24h','wypelnione','limit_niewypelnione','limit_brak_ttl','limit_niejednoznaczne','brak_danych',
             'pokrycie_dojrzalych_pct','sredni_R_net_wypelnione',
             'udzial_top_symbol_pct','status','uwaga'),
         'v630_bledy_api_i_cache.csv':('symbol','from_ms','to_ms','typ','blad')
