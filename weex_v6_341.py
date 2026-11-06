@@ -6918,6 +6918,23 @@ def badanie_setupow_sygnalowych_v267(dpz, c4, meta=None):
                                     and w['t'] is not None and w['t'] >= DZ_T_MIN) else 'brak przewagi'
         out.append(w)
     if meta is not None:
+        # V6.341: unique historical 1b episodes across TP RR and entry variants.
+        # Episode keys are symbol, closed-signal timestamp, direction, strategy.
+        episodes=[]
+        for (nm, direction), q in x.groupby(['sygnal','kier']):
+            u=q.drop_duplicates(subset=['symbol','t','kier','sygnal'])
+            dates=sorted(u.dzien_utc_v340.unique()); cut=int(len(dates)*.7)
+            first=u[u.dzien_utc_v340.isin(dates[:cut])]
+            last=u[u.dzien_utc_v340.isin(dates[cut:])]
+            episodes.append({'sygnal':nm,'side':'LONG' if direction==1 else 'SHORT',
+                'n_wierszy_wariantow':len(q),'unikalne_epizody':len(u),
+                'dni_utc':len(dates),'rr_warianty':q.rr.nunique(),'typy_wejscia':q.wariant.nunique(),
+                'train_n':len(first),'holdout_n':len(last),'train_dni':first.dzien_utc_v340.nunique(),
+                'holdout_dni':last.dzien_utc_v340.nunique(),
+                'train_sr_R':rnd(float(first.r.mean()),5) if len(first) else None,
+                'holdout_sr_R':rnd(float(last.r.mean()),5) if len(last) else None,
+                'status':'REPLAY_NIE_PROSPEKTYWNY_OOS'})
+        meta['v341_epizody']=episodes
         v340=[]
         for (nm, rr, wr, side, regime), q in x.groupby(['sygnal','rr','wariant','kier','btc_rezim_v340']):
             v340.append({'sygnal':nm,'rr':rr,'wariant':wr,'side':'LONG' if side==1 else 'SHORT',
@@ -26111,6 +26128,12 @@ def _v341_diagnostyka(root):
             'zgoda_na_handel':'NIE_ZMIENIONA'})
     qcols=list(quality[0]) if quality else ['symbol','side','snapshot_price','model_entry','odleglosc_modelu_pct','zrodlowy_status_modelu','zrodlowa_walidacja','flagi_diagnostyczne','zgoda_na_handel']
     out('jakosc_elliott_v341.csv',qcols,quality)
+    epi=[dict(w,zestaw=group) for group,fname in [('6 glownych','v341_epizody_glowne.csv'),('pozostale','v341_epizody_pozostale.csv')]
+         for w in load(fname)]
+    epcols=['zestaw','sygnal','side','n_wierszy_wariantow','unikalne_epizody','dni_utc',
+            'rr_warianty','typy_wejscia','train_n','holdout_n','train_dni','holdout_dni',
+            'train_sr_R','holdout_sr_R','status']
+    out('unikalne_epizody_1b_v341.csv',epcols,epi)
     regime=load('rezimy_btc_1b_v340.csv')
     gate=[{'kryterium':'historyczne_agregaty_rezimow_BTC','wartosc':len(regime),'ocena':'BADAWCZE'},
           {'kryterium':'niezalezne_lookahead_free_zdarzenia_1b','wartosc':'BRAK_EVENT_ID_W_EKSPORCIE','ocena':'NIE_POTWIERDZONO'},
@@ -26123,7 +26146,7 @@ def _v341_diagnostyka(root):
            '- Dopasowanie 1b wykorzystuje (nazwa strategii, RR, wariant, uniwersum instrumentu).',
            '- Oddziela 6 glownych od pozostalych, bez laczenia roznych prob i bez wyboru korzystniejszego wyniku.',
            f'- TP: {len(tp)} wierszy wariantow, {len(events)} unikalnych event_id; nie traktowac schematow TP jako niezaleznych transakcji.',
-           '- Surowe event_id dla 1b nie sa dostepne w eksporcie; nie mozna potwierdzic niezaleznosci sygnalow 1b.',
+           f'- Unikalne epizody 1b (agregaty z silnika z deduplikacja RR): {len(epi)} wierszy; diagnostyka 70/30 dni nie jest OOS.',
            '- Elliott: roznica entry-price pokazuje odleglosc planu od snapshotu, nie dowodzi bledu ceny gieldowej.',
            '- Historyczne agregaty reżimu BTC nie sa prospektywnym testem OOS; filtr nie zostal wlaczony.',
            '', 'Raporty: dopasowanie_1b_v341.csv, liczniki_dopasowania_1b_v341.csv, niezalezne_zdarzenia_v341.csv, jakosc_elliott_v341.csv, btc_rezim_walidacja_v341.csv.']
@@ -28294,6 +28317,13 @@ def main():
                                        ('v340_rezim_pozostale.csv',_V267['meta_ext'].get('v340_rezim',[]))]:
                     pd.DataFrame(payload,columns=['sygnal','rr','wariant','side','btc_rezim_4h','n_zdarzen',
                                                   'dni_utc','srednie_R_netto','okno_od','okno_do','zrodlo']).to_csv(OUT/fname,index=False)
+                # V6.341: diagnostic 1b episode counts and chronological time splits.
+                for fname, vals, universe in [('v341_epizody_glowne.csv',_V267['meta'].get('v341_epizody',[]),'6 glownych'),
+                                              ('v341_epizody_pozostale.csv',_V267['meta_ext'].get('v341_epizody',[]),'pozostale')]:
+                    cols=['zestaw','sygnal','side','n_wierszy_wariantow','unikalne_epizody','dni_utc',
+                          'rr_warianty','typy_wejscia','train_n','holdout_n','train_dni','holdout_dni',
+                          'train_sr_R','holdout_sr_R','status']
+                    pd.DataFrame([dict(w,zestaw=universe) for w in vals],columns=cols).to_csv(OUT/fname,index=False)
                 print(f"Setupy z sygnalow V6.267: badanie {[(w['sygnal'][:20], w['rr'], w['sr_R'], w['wniosek']) for w in _V267['badanie']]} | teraz {len(_V267['teraz'])}")
             except Exception as exc:
                 print(f'Setupy z sygnalow V6.267: blad ({str(exc)[:150]})')
