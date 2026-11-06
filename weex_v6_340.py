@@ -29998,3 +29998,262 @@ def _v224_maska_duze(df):
     if _V225_DUZE['zbior']:
         return df.symbol.isin(_V225_DUZE['zbior']) & typ
     vr = pd.to_numeric(df['vol_rank'], errors='coerce') if 'vol_rank' in df.columns else pd.Series(np.nan, index=df.index)
+    return (vr <= SEGMENT_DUZE_RANK) & typ
+
+
+def _v225_ell_uniewazniony(r, PP):
+    """V6.225: setup ELLIOTT nieaktualny, gdy od swiecy C cena dotknela SL (LONG: low <= SL, SHORT: high >= SL)."""
+    try:
+        a = PP[r['symbol']]['arr']['5m']
+        c = int(float(r.get('elliott_abc_c_utc_ms')))
+        sl = float(r.get('sl'))
+        seg = a[a[:, T] >= c]
+        if not len(seg) or not math.isfinite(sl):
+            return False
+        return bool(seg[:, L].min() <= sl) if r.get('side') == 'LONG' else bool(seg[:, H].max() >= sl)
+    except (KeyError, ValueError, TypeError, IndexError):
+        return False
+
+
+def _v224_ochrona_segment(arch, now_ms):
+    """V6.224: tryb ochronny dla duzych kontraktow w SEGMENT_TYPY: sr. wynik z OCHRONA_DNI dni, przy < SEGMENT_MIN_N z 7 dni.
+    Zwraca {'aktywny', 'n', 'sredni_R', 'dni'} albo None (za malo danych -> decyduje tryb strony jak dotad)."""
+    if arch is None or not len(arch) or 'vol_rank' not in arch.columns:
+        return None
+    for dni in (OCHRONA_DNI, 7):
+        d = arch[(arch.snapshot_utc >= snap_iso(now_ms - dni * DAY_MS)) & arch.status.isin(FINAL) & (arch.filtr.fillna('') == '')]
+        d = d[_v224_maska_duze(d)] if len(d) else d
+        r = pd.to_numeric(d.r, errors='coerce').dropna() if len(d) else pd.Series(dtype=float)
+        if len(r) >= SEGMENT_MIN_N:
+            return {'aktywny': bool(r.mean() < 0), 'n': int(len(r)), 'sredni_R': rnd(float(r.mean()), 3), 'dni': dni}
+    return None
+
+
+def ochrona_strony(ochrona, side):
+    """Czy tryb ochronny dotyczy tego kierunku (globalny albo per strona)."""
+    if not ochrona:
+        return False
+    return bool(ochrona.get('aktywny') or (OCHRONA_PER_STRONA and ochrona.get('strony', {}).get(side, {}).get('aktywny')))
+
+
+def lev_line(r):
+    if r.get('dzwignia') is None:
+        return 'dzwignia: ' + (r.get('dzwignia_uwagi') or 'brak')
+    txt = (f"dzwignia {r['dzwignia']}x (pref {r['dzwignia_pref']}x, bezp. max {r['dzwignia_bezp']}x) | wartosc {r['wartosc_usdt']} USDT, "
+           f"depozyt {r['depozyt_usdt']} USDT ({r['depozyt_pct']}%), ilosc {r['ilosc']} | likw. {r['likwidacja']} "
+           f"({r['likw_vs_sl']}x SL) | SL -{r['strata_sl_usdt']} / TP1 +{r['zysk_tp1_usdt']} USDT")
+    if r.get('tp_1R'):
+        txt += (f" | {int(CZESC_1R * 100)}% przy 1R {r['tp_1R']}, potem SL na wejscie" +
+                (f" i trailing {TRAIL_PO_1R_R}R za najlepsza cena" if TRAIL_PO_1R_R else '') +
+                (f", trzymaj do {HOLD_PO_1R_H}h" if HOLD_PO_1R_H else ''))
+    elif r.get('setup_type') in BEZ_1R_TYPY:           # V6.53
+        txt += f" | BEZ zamykania czesci na 1R: trzymaj do TP1 albo SL, max {SETUP_HOLD_H.get(r['setup_type'], BT_MAX_HOLD_H)}h"
+    return txt + (f" | UWAGA: {r['dzwignia_uwagi']}" if r.get('dzwignia_uwagi') else '')
+
+
+def print_report(good, live, bt_df, arch, gate, meta, top=(), htab=None):
+    print('\n' + '=' * 90)
+    print(f"{VERSION} | {meta['server_time'][:16]} UTC | kontrakty: krypto {meta.get('symbols_krypto')} + TradFi {meta.get('symbols_tradfi')} "
+          f"| setupy {len(good)} (wszystkie {len(live)})")
+    if not meta.get('drive') and not meta.get('replay'):   # V6.42
+        print('!!! BRAK GOOGLE DRIVE - bramka, tryb ochronny i proby NIEWIARYGODNE (BRAK_DYSKU.txt) !!!')
+    pb = meta.get('proba') or {}
+    if pb:                                             # V6.20
+        print(f"TRYB PROBNY: teraz {pb.get('teraz_do_handlu')} do handlu (z {pb.get('kandydaci_teraz')} kandydatow, max {PROBA_MAX_NA_RAZ}) | "
+              f"dziennik proby: wystawione {pb.get('wystawione')}, rozstrzygniete {pb.get('rozstrzygniete')}, "
+              f"sr. {pb.get('sredni_R')}R, suma {pb.get('suma_R')}R (proba_wyniki.csv)")
+    rz = meta.get('rozbieznosci') or []
+    if rz:                                             # V6.24
+        print(f'UWAGA - ROZBIEZNOSC (wynik dodatni w probie projektowej, ujemny po ustaleniu regul) - {len(rz)} strategii:')
+        for x in rz:
+            print('  ' + x)
+    jw = next((j for j in meta.get('jakosc_testu') or [] if str(j.get('zrodlo', '')).startswith('archiwum')), None)
+    if jw and (_num(jw.get('po_ustaleniu_regul_sredni_R')) or 0) < 0:
+        print(f"UWAGA: lacznie po ustaleniu regul {jw['po_ustaleniu_regul_sredni_R']}R ({jw['po_ustaleniu_regul_n']} tr.) - dodatnie wyniki "
+              f"pojedynczych strategii w testach pochodza glownie z proby projektowej; o dopuszczeniu decyduje tylko bramka (po ustaleniu regul)")
+    zk = meta.get('zakresy_testow') or {}
+    if len(zk) > 1:                                    # V6.21
+        print('UWAGA: testy nakladaja sie w czasie - to NIE sa niezalezne potwierdzenia: '
+              + '; '.join(f'{k} {a[5:]} .. {b[5:]}' for k, (a, b) in zk.items()))
+    for j in meta.get('jakosc_testu') or []:          # V6.16
+        print(f"Jakosc testu [{j['zrodlo']}]: wykryte {j['wykryte']}, unikalne okazje {j['unikalne_okazje']}, rozstrzygniete "
+              f"{j['rozstrzygniete']}, niejednoznaczne {j['niejednoznaczne']} ({j['niejednoznaczne_pct']}%), luka danych {j['z_luka_danych']} | "
+              f"sr. R po filtrach: pesymistycznie {j['sredni_R_pesymistyczny']}, bez niejednoznacznych {j['sredni_R_bez_niejednoznacznych']} | "
+              f"po filtrach {j['po_filtrach_n']} tr. = {j['unikalne_okazje_po_filtrach']} okazji z {j['niezalezne_zdjecia']} zdjec; "
+              f"po ustaleniu regul {j['po_ustaleniu_regul_n']} tr. ({j['po_ustaleniu_regul_zdjecia']} zdjec), sr. {j['po_ustaleniu_regul_sredni_R']}R"
+              + ('' if j['dane_flag'] == 'tak' else ' (stare wiersze bez oznaczen)'))
+    if meta.get('odrzucone'):
+        o = meta['odrzucone']
+        print(f"Odrzucone przy budowie (odrzucone.csv): {o['n']} - " + ', '.join(f'{k} {v}' for k, v in list(o['powody'].items())[:5]))
+    if meta.get('btc_context'):
+        b = meta['btc_context']
+        print(f"BTC: trend 1h {b.get('trend_1h')}, 4h {b.get('trend_4h')}, 24h {b.get('chg_24h_pct')}%, rezim {b.get('regime_1h')}")
+    sh = meta.get('alarm_btc') or {}
+    if sh.get('alarm'):
+        print(f"\n!!! ALARM BTC (ruch kierunkowy): {sh['od']} -> {sh['teraz']} w {ALARM_BTC_MIN} min ({sh['zmiana_atr15']:+} ATR 15m, zakres {sh['zakres_atr15']} ATR). "
+              f"Nie otwieraj nowych pozycji, sprawdz SL na otwartych, poczekaj na zamkniecie swiecy 15m.")
+    elif sh.get('ostrzezenie_zakres'):                     # V6.211
+        print(f"Uwaga BTC: duzy zakres {sh['zakres_atr15']} ATR 15m w {ALARM_BTC_MIN} min bez ruchu kierunkowego "
+              f"({sh['zmiana_atr15']:+} ATR) - tylko ostrzezenie, wejscia nie sa blokowane.")
+    oc = meta.get('tryb_ochronny') or {}
+    if OCHRONA_PER_STRONA:
+        for sd, st in (oc.get('strony') or {}).items():
+            if st.get('aktywny'):
+                print(f"\n!!! TRYB OCHRONNY {sd}: ostatnie {OCHRONA_DNI} dni sr. {st['sredni_R']}R (n={st['n']}) -> {sd} {'nie do handlu, ' if _v256_blokuje(sd) else ''}ryzyko x{OCHRONA_MNOZNIK}")
+            else:
+                print(f"Tryb ochronny {sd}: nie (ostatnie {OCHRONA_DNI} dni: sr. {st.get('sredni_R')}R, n={st.get('n')})")
+    elif oc.get('aktywny'):
+        print(f"\n!!! TRYB OCHRONNY: setupy z ostatnich {OCHRONA_DNI} dni sr. {oc['sredni_R']}R (n={oc['n']}) -> ryzyko x{OCHRONA_MNOZNIK} "
+              f"(plan dzwigni juz przeliczony)")
+    else:
+        print(f"\nTryb ochronny: nie (ostatnie {OCHRONA_DNI} dni: sr. {oc.get('sredni_R')}R, n={oc.get('n')}; wymagane n>={OCHRONA_MIN_N})")
+    for sd, e in (meta.get('ekspozycja') or {}).items():
+        if e.get('za_duze'):
+            print(f"!!! EKSPOZYCJA {sd}: {e['setupy_AB']} setupow A/B + {e['pozycje']} pozycji = {e['ryzyko_pct']}% kapitalu "
+                  f"(> {MAX_RYZYKO_KIERUNEK_PCT}%) - to jeden zaklad na kierunek rynku, wybierz najlepsze")
+            print(f"    miesci sie w limicie: {', '.join(e.get('wybrane') or []) or 'nic (limit zajety przez otwarte pozycje)'}")
+    if meta.get('pozycje'):
+        print('\nOTWARTE POZYCJE (reguly zarzadzania - jeszcze bez testu wstecznego):')
+        for p in meta['pozycje']:
+            extra = (f" -> zamknij {p['zamknij_pct']}%" if p.get('zamknij_pct') else '') + \
+                    (f" | nowy SL {p['nowy_sl']}" if p.get('nowy_sl') else '')
+            print(f"  {p['symbol']:14s} {p['side']:5s} {p['akcja']:13s}{extra} | cena {p.get('price')} wejscie {p.get('entry')} "
+                  f"SL {p.get('sl')} | {p.get('R_teraz')}R (maks {p.get('MFE_R')}R)"
+                  + (f" | zamknij najpozniej {p['zamknij_najpozniej_pl']}" if p.get('zamknij_najpozniej_pl') else ''))
+            print(f"     {p.get('powody')}" + (f" | {p['uwagi']}" if p.get('uwagi') else ''))
+    print('\nBRAMKA (dane od', gate.od.iloc[0] if len(gate) else GATE_FROM_UTC, '):')
+    for g in gate.itertuples():
+        print(f'  {g.typ:16s} {g.side:5s} {g.status:10s} transakcji {g.transakcje:4d} ({g.unikalne_okazje} okazji, od {str(g.od)[5:16]})  sr. R {g.sredni_R}  przewaga {g.sredni_edge_R} '
+              f't {g.t_edge}  (brakuje {g.brakuje_transakcji}) | bez filtrow: {g.bez_filtrow_transakcje} tr., sr. R {g.bez_filtrow_sredni_R}')
+    if htab is not None and len(htab):
+        print(f"\nTEST HISTORYCZNY ({HIST_DAYS} dni, {(meta.get('test_historyczny') or {}).get('meta', {}).get('source')}, po filtrach)"
+              f" - przewaga = wynik setupu minus losowe wejscie w tym samym kierunku:")
+        for h in htab.sort_values('t_edge', ascending=False, na_position='last').itertuples():
+            print(f'  {h.typ:16s} {h.side:5s} n={h.transakcje:5d}  sr R {h.sredni_R:+.3f}  losowe {h.losowe_R}  '
+                  f'przewaga {h.sredni_edge_R}  t {h.t_edge}  zdjec {h.zdjecia}')
+        ok = meta.get('_hist_ok')
+        if ok is not None and len(ok):
+            lq = liq_compare(ok)
+            print(f"  TP na klastrze likwidacji vs zwykly TP1 (te same transakcje, n={lq['liq_n']}): "
+                  f"{lq['liq_R_klaster']} vs {lq['liq_R_tp1']} R, t roznicy {lq['liq_t_roznicy']}")
+    if len(bt_df):
+        s = bt_summary(bt_df)
+        print('\nTEST WSTECZNY (ten przebieg):')
+        for k, v in s.items():
+            if v.get('transakcje'):
+                print(f"  {k:28s} n={v['transakcje']:4d}  trafn {v['skutecznosc_pct']:5.1f}%  sr R {v['sredni_R']:+.3f}  "
+                      f"przewaga {v.get('sredni_edge_R')}  t {v.get('t_edge')}  zdjec {v['zdjecia']}")
+    for mode in ('MARKET', 'LIMIT'):
+        rows = [t for t in top if t['mode'] == mode]
+        print(f'\nTOP {mode} (przewaga nad losowym wejsciem z t >= {TOP_MIN_T}; max {TOP_MAX_PER_SIDE} na kierunek, 1 na kontrakt):')
+        if not rows:
+            print('  brak - zaden obecny setup z ocena A-C nie ma potwierdzonej przewagi w historii')
+        for t in rows:
+            print(f"  {t['rank']}. [{t['status_bramki']}] {t['symbol']:14s} {t['side']:5s} {t['setup_type']:10s} wejscie {t['entry']} "
+                  f"({t['dist_entry_pct']:+.2f}%) SL {t['sl']} TP1 {t['tp1']} RR {t['rr_tp1_net']} | ocena {t['score_R']:+.3f}R "
+                  f"(n={t['hist_n']}, sr {t['hist_sr_R']:+.2f}R, przewaga {t['hist_edge_R']:+.2f}R t {t['hist_t_edge']}, {t['hist_zrodlo']})")
+            print('     ' + lev_line(t))
+    rk = meta.get('ranking') or []
+    bb = meta.get('btc_bias_5m')
+    bt1 = (meta.get('btc_context') or {}).get('trend_1h')
+    wg = meta.get('warunki_globalne') or []
+    print(f"\nWARUNKI DO HANDLU: {'NIE - ' + ', '.join(wg) if wg else 'globalnie OK (sprawdz kolumne DO HANDLU przy setupie)'}")
+    sq = meta.get('squeeze') or {}
+    if sq:
+        print(f"\nSQUEEZE WATCH (V6.12, tylko informacja): wyprzedanie teraz {sq.get('wyprzedanie_teraz')}, max {SQUEEZE_OKNO_H}h {sq.get('wyprzedanie_6h_max')} "
+              f"(prog {sq.get('prog')}) | BTC zebral dolek 24h: {sq.get('btc_zebral_dolek_24h')}, powrot nad dolek: {sq.get('btc_powrot_nad_dolek')}")
+        if sq.get('alarm_odbicia'):
+            print(f"  >>> ALARM ODBICIA: rynek skrajnie wyprzedany i BTC wrocil nad zebrany dolek {sq.get('btc_poprzedni_dolek_24h')}. "
+                  f"Sygnal NIEUDOWODNIONY (8 zdarzen w 40 dniach) - najwyzej {SQUEEZE_RYZYKO_R}R, 1 pozycja:")
+            for c_ in sq.get('kandydaci_long') or []:
+                print(f"     LONG {c_['symbol']:14s} cena {c_['cena']} SL {c_['sl']} ({c_['ryzyko_pct']}%) +1R {c_['plus_1R']} "
+                      f"ilosc {c_['ilosc']} (ryzyko {c_['ryzyko_usdt']} USDT) | RS vs BTC {c_['rs_btc_24h']} | 15m {c_['struktura_15m']}")
+    if TRADFI_ON:
+        tf_rows = [r for r in (meta.get('ranking') or []) if r.get('asset_type') in TRADFI_TYPES]
+        tt = meta.get('tradfi_test') or []
+        odb = [x for x in tt if x.get('odblokowany')]
+        print(f"\nTRADFI (V6.14: akcje, indeksy, metale, surowce; sesja USA {'OTWARTA' if meta.get('us_session_open') else 'ZAMKNIETA'}):")
+        print(f"  test akcji/indeksow (archiwum; od V6.88 cala doba): {sum(int(x.get('transakcje') or 0) for x in tt)} transakcji, "
+              f"odblokowane typy: {', '.join(x['typ_wersja'] + ' ' + x['side'] for x in odb) or 'brak (filtr tradfi_bez_testu -> D)'}")
+        print('  metale i surowce: ten sam test i bramka co krypto (bez zmian)')
+        for mode in ('MARKET', 'LIMIT'):
+            rows = [r for r in tf_rows if r['entry_type'] == mode][:5]
+            print(f'  {mode}:')
+            if not rows:
+                print('    brak setupow')
+            for r in rows:
+                print(f"    [{r['ocena']}] {'DO HANDLU' if r.get('do_handlu') else 'czekaj':9s} {r['symbol']:12s} {r.get('asset_type', ''):11s} {r['side']:5s} "
+                      f"{r['setup_type']:10s} wejscie {r['entry']} ({r['dist_entry_pct']:+.2f}%) SL {r['sl']} TP1 {r['tp1']} RR {r['rr_tp1_net']} "
+                      f"ryzyko {r['risk_pct']}%" + (f" | filtr: {r['filtr']}" if r.get('filtr') else ''))
+    gt = meta.get('gate_tlum') or {}
+    if gt.get('kontrakty'):
+        def _g(f):
+            return (f"L/S konta {f.get('gate_lsr_konta')} (z {f.get('gate_lsr_z')}), taker {f.get('gate_lsr_taker')}, "
+                    f"likw. 4h L {f.get('gate_likw_long_4h_usd')} / S {f.get('gate_likw_short_4h_usd')} USD") if f else 'brak'
+        print(f"\nTLUM Z GATE.IO (V6.13, inna gielda, tylko informacja; {gt['kontrakty']} kontraktow):")
+        print(f"  BTC: {_g(gt.get('BTCUSDT'))}")
+        print(f"  ETH: {_g(gt.get('ETHUSDT'))}")
+        print(f"  likwidacje 4h razem: long {gt.get('likw_long_4h_usd')} USD, short {gt.get('likw_short_4h_usd')} USD "
+              f"(udzial long {gt.get('likw_long_udzial')}) - przewaga likwidacji long = wyplukani kupujacy, short = wyciskane shorty")
+    print(f"\nRANKING Z OCENA (A najlepsze, D pomin; BTC trend 1h: {'w gore' if bt1 == 1 else 'w dol' if bt1 == -1 else 'brak'}, "
+          f"BTC 5m: {'w gore' if bb == 1 else 'w dol' if bb == -1 else 'brak'}):")
+    for mode in ('MARKET', 'LIMIT'):
+        rows = [r for r in rk if r['entry_type'] == mode][:OCENA_TOP_N]
+        print(f'  {mode}:')
+        if not rows:
+            print('    brak setupow')
+        for r in rows:
+            print(f"    [{r['ocena']}] {'DO HANDLU' if r.get('do_handlu') else 'czekaj':9s} {r['ocena_pkt']:+d} {r['symbol']:14s} {r['side']:5s} {r['setup_type']:10s} wejscie {r['entry']} "
+                  f"({r['dist_entry_pct']:+.2f}%) SL {r['sl']} TP1 {r['tp1']} RR {r['rr_tp1_net']} ryzyko {r['risk_pct']}% "
+                  f"dzw. {r.get('dzwignia')}x (max {r.get('dzwignia_bezp')}x)" + (f" | filtr: {r['filtr']}" if r.get('filtr') else ''))
+            print(f"         {r['ocena_powody']}" + ('' if r.get('do_handlu') else f" | warunki: {r.get('warunki')}"))
+            if r.get('gate_lsr_konta') is not None:
+                print(f"         Gate: L/S {r['gate_lsr_konta']} (z {r.get('gate_lsr_z')}), likw. 4h L {r.get('gate_likw_long_4h_usd')} / "
+                      f"S {r.get('gate_likw_short_4h_usd')} USD, OI 4h {r.get('gate_oi_chg_4h_pct')}% | WEEX OI 4h {r.get('oi_chg_4h_pct')}%")
+        if rows and all(r['ocena'] == 'D' for r in rows):
+            print('    -> nic wartego wejscia w tym trybie')
+    print('\nSETUPY (po filtrach, tradable):')
+    if not good:
+        print('  brak')
+    for mode, title in (('MARKET', 'WEJSCIE PO RYNKU (teraz)'), ('LIMIT', 'ZLECENIA LIMIT (czekaja na cene)')):
+        rows = sorted([r for r in good if r['entry_type'] == mode],
+                      key=lambda r: ('ABCD'.index(r.get('ocena') or 'D'), -(r.get('ocena_pkt') or 0)))
+        print(f'  {title}: {len(rows)}')
+        if good and not rows:
+            print('    brak')
+        for r in rows[:15]:
+            print(f"    [{r.get('ocena', '?')}] [{r['status_bramki']}] {r['symbol']:14s} {r['side']:5s} {r['setup_type']:10s} wejscie {r['entry']} "
+                  f"({r['dist_entry_pct']:+.2f}%) SL {r['sl']} TP1 {r['tp1']} RR {r['rr_tp1_net']} koszt {r['cost_R']}R | {r['trigger']}")
+            print('       ' + lev_line(r) + f" | {r['cancel_if']}")
+    if any(r['status_bramki'] == 'OBSERWACJA' for r in good):
+        print('\n  OBSERWACJA = typ jeszcze bez potwierdzonej skutecznosci na nowych danych. Nie traktuj tego jak sygnalu.')
+
+
+def petla_v258():
+    """V6.258: uruchamianie co AUTO_PETLA_MIN minut (Colab). Alerty Telegram przy nowych DO GRY."""
+    koniec = time.time() + AUTO_PETLA_MAX_H * 3600
+    _v258_wysylka(f'WEEX {VERSION}: petla uruchomiona co {AUTO_PETLA_MIN} min na {AUTO_PETLA_MAX_H} h')   # V6.268: test polaczenia
+    while time.time() < koniec:
+        t0 = time.time()
+        try:
+            main()
+        except Exception as exc:
+            print(f'Petla V6.258: blad przebiegu ({str(exc)[:200]})')
+        czekaj = max(60, AUTO_PETLA_MIN * 60 - (time.time() - t0))
+        if AUTO_PETLA_4H:                                  # V6.284: nie przegap zamkniecia swiecy 4h
+            nast = (int(time.time() // (4 * 3600)) + 1) * 4 * 3600 + 180
+            czekaj = max(60, min(czekaj, nast - time.time()))
+        print(f'Petla V6.258: nastepny przebieg za {czekaj / 60:.0f} min')
+        time.sleep(czekaj)
+
+
+if __name__ == '__main__':
+    import sys as _sys
+    if '--elliott-monitor' in _sys.argv:
+        _v280_cli(_sys.argv[1:])
+    elif '--test-v280' in _sys.argv:
+        print(test_v280_monitor())
+    elif AUTO_PETLA_MIN and not REPLAY_ZIP:
+        petla_v258()
+    else:
+        main()
